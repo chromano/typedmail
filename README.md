@@ -56,6 +56,11 @@ See [ROADMAP.md](ROADMAP.md) for planned work.
 
 Requires Docker. Go 1.25+ is only needed to run outside Docker.
 
+Extraction calls Claude and needs `ANTHROPIC_API_KEY`, set in your shell or in
+`.env`. Without it the app still receives email, but jobs stay queued until a
+key is configured. `EXTRACT_MODEL` overrides the model (default
+`claude-opus-5`).
+
 ```sh
 make up      # build and start app + Postgres
 make seed    # create an inbox per schemas/<slug>.json (orders, invoices, shipments)

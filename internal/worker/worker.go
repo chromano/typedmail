@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -20,8 +21,17 @@ type Queue interface {
 	FailJob(ctx context.Context, id int64, lastError string) error
 }
 
-// Handler runs one job. Returning an error retries the job.
+// Handler runs one job. Returning an error retries the job, unless the error
+// is wrapped with Permanent.
 type Handler func(ctx context.Context, job store.Job) error
+
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+// Permanent marks an error that retrying can't fix, so the job fails at once.
+func Permanent(err error) error { return permanentError{err} }
 
 // Config tunes the worker. The defaults spread 10 attempts over about 6 hours
 // (1m, 2m, 4m ... 2h, 2h), so a job survives an outage of the LLM provider or
@@ -121,7 +131,7 @@ func (w *Worker) process(ctx context.Context, job store.Job) {
 		case runErr == nil:
 			log.Info("job done", "duration_ms", time.Since(start).Milliseconds())
 			err = w.queue.CompleteJob(record, job.ID)
-		case job.Attempts >= w.cfg.MaxAttempts:
+		case errors.As(runErr, new(permanentError)) || job.Attempts >= w.cfg.MaxAttempts:
 			log.Error("job failed", "err", runErr)
 			err = w.queue.FailJob(record, job.ID, runErr.Error())
 		default:

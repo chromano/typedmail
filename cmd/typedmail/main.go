@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/chromano/typedmail/internal/extract"
 	"github.com/chromano/typedmail/internal/ingest"
 	"github.com/chromano/typedmail/internal/store"
 	"github.com/chromano/typedmail/internal/worker"
@@ -63,17 +65,22 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	wrk := worker.New(st, map[string]worker.Handler{
-		store.JobExtract: func(ctx context.Context, job store.Job) error {
-			log.Info("extraction not implemented yet; marking job done", "message_id", job.MessageID)
-			return nil
-		},
-	}, worker.Config{}, log)
 	workerDone := make(chan struct{})
-	go func() {
-		defer close(workerDone)
-		wrk.Run(ctx)
-	}()
+	if cfg.anthropicAPIKey == "" {
+		// Without a key every extraction would fail; leave jobs queued until
+		// one is configured.
+		log.Warn("ANTHROPIC_API_KEY not set; extraction is disabled and jobs stay queued")
+		close(workerDone)
+	} else {
+		ex := extract.New(cfg.extractModel)
+		wrk := worker.New(st, map[string]worker.Handler{
+			store.JobExtract: extractHandler(st, ex, log),
+		}, worker.Config{}, log)
+		go func() {
+			defer close(workerDone)
+			wrk.Run(ctx)
+		}()
+	}
 
 	errc := make(chan error, 1)
 	go func() {
@@ -103,6 +110,8 @@ type config struct {
 	databaseURL     string
 	inboundUser     string
 	inboundPassword string
+	anthropicAPIKey string
+	extractModel    string
 }
 
 func loadConfig() (config, error) {
@@ -111,6 +120,8 @@ func loadConfig() (config, error) {
 		databaseURL:     os.Getenv("DATABASE_URL"),
 		inboundUser:     os.Getenv("INBOUND_USER"),
 		inboundPassword: os.Getenv("INBOUND_PASSWORD"),
+		anthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		extractModel:    getenv("EXTRACT_MODEL", extract.DefaultModel),
 	}
 	if cfg.databaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -126,4 +137,29 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// extractHandler runs extraction for a message. Until results are stored
+// (issue #8), the JSON is logged.
+func extractHandler(st *store.Store, ex *extract.Extractor, log *slog.Logger) worker.Handler {
+	return func(ctx context.Context, job store.Job) error {
+		in, err := st.ExtractInput(ctx, job.MessageID)
+		if err != nil {
+			return fmt.Errorf("load message: %w", err)
+		}
+		out, err := ex.Extract(ctx, in.Schema, extract.Email{
+			From:     in.FromAddress,
+			Subject:  in.Subject,
+			TextBody: in.TextBody,
+			HTMLBody: in.HTMLBody,
+		})
+		if errors.Is(err, extract.ErrUnextractable) {
+			return worker.Permanent(err)
+		}
+		if err != nil {
+			return err
+		}
+		log.Info("extracted", "message_id", job.MessageID, "inbox", in.InboxSlug, "json", json.RawMessage(out))
+		return nil
+	}
 }

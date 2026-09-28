@@ -93,6 +93,7 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 		store.Job{ID: 2, Kind: "flaky", Attempts: 1},
 		store.Job{ID: 3, Kind: "flaky", Attempts: 3},
 		store.Job{ID: 4, Kind: "flaky", Attempts: 5},
+		store.Job{ID: 5, Kind: "broken", Attempts: 1},
 		store.Job{ID: 6, Kind: "panics", Attempts: 1},
 		store.Job{ID: 7, Kind: "unknown", Attempts: 1},
 		store.Job{ID: 8, Kind: "ok", Attempts: 6}, // reclaimed after its worker died on attempt 5
@@ -100,10 +101,11 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 	w := New(q, map[string]Handler{
 		"ok":     func(context.Context, store.Job) error { return nil },
 		"flaky":  func(context.Context, store.Job) error { return errors.New("timeout") },
+		"broken": func(context.Context, store.Job) error { return Permanent(errors.New("bad input")) },
 		"panics": func(context.Context, store.Job) error { panic("boom") },
 	}, Config{PollInterval: time.Millisecond, MaxAttempts: 5, BaseBackoff: time.Minute, MaxBackoff: time.Hour}, discard)
 
-	runUntil(t, w, q, 7)
+	runUntil(t, w, q, 8)
 
 	if len(q.completed) != 1 || q.completed[0] != 1 {
 		t.Errorf("completed = %v, want [1]", q.completed)
@@ -116,6 +118,7 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 	}
 	wantFailed := map[int64]string{
 		4: "timeout",
+		5: "bad input",
 		7: `no handler for job kind "unknown"`,
 		8: "worker died while running the job",
 	}

@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -70,6 +71,26 @@ func (s *Store) SaveInbound(ctx context.Context, m InboundMessage) (id int64, cr
 		return err
 	})
 	return id, created, err
+}
+
+// ExtractInput is a stored message together with its inbox's schema.
+type ExtractInput struct {
+	InboxSlug   string
+	Schema      json.RawMessage
+	FromAddress string
+	Subject     string
+	TextBody    string
+	HTMLBody    string
+}
+
+// ExtractInput loads what extraction needs for one message.
+func (s *Store) ExtractInput(ctx context.Context, messageID int64) (in ExtractInput, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT i.slug, i.schema, m.from_address, m.subject, m.text_body, m.html_body
+		FROM messages m JOIN inboxes i ON i.id = m.inbox_id
+		WHERE m.id = $1`, messageID,
+	).Scan(&in.InboxSlug, &in.Schema, &in.FromAddress, &in.Subject, &in.TextBody, &in.HTMLBody)
+	return in, err
 }
 
 // Job is a claimed unit of work. Attempts counts this run.

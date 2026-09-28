@@ -292,3 +292,24 @@ func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
 		t.Errorf("reclaimed %+v, want job %d on attempt 2", second, first.ID)
 	}
 }
+
+func TestExtractInput(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE inboxes SET schema = '{"type": "object"}' WHERE slug = 'orders'`); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := s.SaveInbound(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in, err := s.ExtractInput(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.InboxSlug != "orders" || string(in.Schema) != `{"type": "object"}` ||
+		in.FromAddress != msg.FromAddress || in.Subject != msg.Subject || in.TextBody != msg.TextBody {
+		t.Errorf("input = %+v", in)
+	}
+}
