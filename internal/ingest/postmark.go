@@ -4,6 +4,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -63,7 +64,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p postmarkInbound
-	if err := json.Unmarshal(raw, &p); err != nil {
+	raw, err = stripNUL(raw)
+	if err == nil {
+		err = json.Unmarshal(raw, &p)
+	}
+	if err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -154,6 +159,50 @@ func messageID(p postmarkInbound) string {
 		return ""
 	}
 	return "postmark:" + p.MessageID
+}
+
+// stripNUL removes NUL characters from every string in a JSON payload.
+// Postgres rejects them in text and jsonb, so a message containing one could
+// never be saved, and every retry from the provider would fail the same way.
+// Payloads without a \u0000 escape are returned untouched, so the stored raw
+// payload stays verbatim in the common case.
+func stripNUL(raw []byte) ([]byte, error) {
+	if !bytes.Contains(raw, []byte(`\u0000`)) {
+		return raw, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber() // keep numbers exactly as sent
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(dropNUL(v)); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+func dropNUL(v any) any {
+	switch v := v.(type) {
+	case string:
+		return strings.ReplaceAll(v, "\x00", "")
+	case []any:
+		for i := range v {
+			v[i] = dropNUL(v[i])
+		}
+		return v
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, x := range v {
+			out[strings.ReplaceAll(k, "\x00", "")] = dropNUL(x)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

@@ -214,3 +214,64 @@ func TestMapping(t *testing.T) {
 		})
 	}
 }
+
+func TestHandlerStripsNULBytes(t *testing.T) {
+	p := samplePayload(t)
+	p["Subject"] = "PO\x00 10442"
+	p["TextBody"] = "Please ship\x00 200 stickers."
+	p["Headers"] = []any{map[string]any{"Name": "Message-ID", "Value": "<po10442\x00@mail.acme-retail.com>"}}
+	p["X-Extra\x00"] = []any{"a\x00b", 1.5}
+
+	var saver fakeSaver
+	saver.created = true
+	rec := post(t, newTestHandler(&saver), p, true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want %d (body %q)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(saver.got) != 1 {
+		t.Fatalf("saved %d messages, want 1", len(saver.got))
+	}
+	got := saver.got[0]
+	if got.Subject != "PO 10442" {
+		t.Errorf("subject = %q, want %q", got.Subject, "PO 10442")
+	}
+	if got.TextBody != "Please ship 200 stickers." {
+		t.Errorf("text body = %q", got.TextBody)
+	}
+	if got.MessageID != "<po10442@mail.acme-retail.com>" {
+		t.Errorf("message ID = %q", got.MessageID)
+	}
+	if strings.Contains(string(got.Raw), `\u0000`) || strings.ContainsRune(string(got.Raw), 0) {
+		t.Errorf("raw payload still contains NUL: %s", got.Raw)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(got.Raw, &raw); err != nil {
+		t.Fatalf("raw payload is not valid JSON: %v", err)
+	}
+	if extra, ok := raw["X-Extra"].([]any); !ok || extra[0] != "ab" || extra[1] != 1.5 {
+		t.Errorf("X-Extra = %v, want [ab 1.5]", raw["X-Extra"])
+	}
+}
+
+func TestStripNUL(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"leaves a payload without NUL verbatim", `{"b": 1, "a": "<x>"}`, `{"b": 1, "a": "<x>"}`},
+		{"keeps an escaped backslash followed by u0000", `{"a":"\\u0000"}`, `{"a":"\\u0000"}`},
+		{"keeps numbers as sent", `{"n":1.50,"s":"\u0000"}`, `{"n":1.50,"s":""}`},
+		{"does not escape HTML", `{"s":"<b>\u0000&"}`, `{"s":"<b>&"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := stripNUL([]byte(tt.in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("stripNUL(%s) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
