@@ -25,7 +25,7 @@ func newFakeQueue(jobs ...store.Job) *fakeQueue {
 	return &fakeQueue{jobs: jobs, failed: map[int64]string{}, retried: map[int64]time.Duration{}}
 }
 
-func (q *fakeQueue) ClaimJob(context.Context) (store.Job, bool, error) {
+func (q *fakeQueue) ClaimJob(context.Context, time.Duration) (store.Job, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.jobs) == 0 {
@@ -36,24 +36,24 @@ func (q *fakeQueue) ClaimJob(context.Context) (store.Job, bool, error) {
 	return j, true, nil
 }
 
-func (q *fakeQueue) CompleteJob(_ context.Context, id int64) error {
+func (q *fakeQueue) CompleteJob(_ context.Context, job store.Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.completed = append(q.completed, id)
+	q.completed = append(q.completed, job.ID)
 	return nil
 }
 
-func (q *fakeQueue) RetryJob(_ context.Context, id int64, _ string, delay time.Duration) error {
+func (q *fakeQueue) RetryJob(_ context.Context, job store.Job, _ string, delay time.Duration) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.retried[id] = delay
+	q.retried[job.ID] = delay
 	return nil
 }
 
-func (q *fakeQueue) FailJob(_ context.Context, id int64, lastError string) error {
+func (q *fakeQueue) FailJob(_ context.Context, job store.Job, lastError string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.failed[id] = lastError
+	q.failed[job.ID] = lastError
 	return nil
 }
 
@@ -96,6 +96,7 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 		store.Job{ID: 5, Kind: "broken", Attempts: 1},
 		store.Job{ID: 6, Kind: "panics", Attempts: 1},
 		store.Job{ID: 7, Kind: "unknown", Attempts: 1},
+		store.Job{ID: 8, Kind: "ok", Attempts: 6}, // reclaimed after its worker died on attempt 5
 	)
 	w := New(q, map[string]Handler{
 		"ok":     func(context.Context, store.Job) error { return nil },
@@ -104,7 +105,7 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 		"panics": func(context.Context, store.Job) error { panic("boom") },
 	}, Config{PollInterval: time.Millisecond, MaxAttempts: 5, BaseBackoff: time.Minute, MaxBackoff: time.Hour}, discard)
 
-	runUntil(t, w, q, 7)
+	runUntil(t, w, q, 8)
 
 	if len(q.completed) != 1 || q.completed[0] != 1 {
 		t.Errorf("completed = %v, want [1]", q.completed)
@@ -115,7 +116,12 @@ func TestWorkerRecordsOutcomes(t *testing.T) {
 			t.Errorf("job %d retried in %v (retried=%v), want %v", id, got, ok, want)
 		}
 	}
-	wantFailed := map[int64]string{4: "timeout", 5: "bad input", 7: `no handler for job kind "unknown"`}
+	wantFailed := map[int64]string{
+		4: "timeout",
+		5: "bad input",
+		7: `no handler for job kind "unknown"`,
+		8: "worker died while running the job",
+	}
 	for id, want := range wantFailed {
 		if got := q.failed[id]; got != want {
 			t.Errorf("job %d failed with %q, want %q", id, got, want)

@@ -159,7 +159,7 @@ func TestClaimJob(t *testing.T) {
 	ctx := context.Background()
 	saveJobs(t, s, 1)
 
-	job, ok, err := s.ClaimJob(ctx)
+	job, ok, err := s.ClaimJob(ctx, time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
@@ -170,7 +170,7 @@ func TestClaimJob(t *testing.T) {
 		t.Errorf("row = %+v, want running with 1 attempt", r)
 	}
 
-	if _, ok, err := s.ClaimJob(ctx); err != nil || ok {
+	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
 		t.Errorf("second claim: ok=%v err=%v, want no job", ok, err)
 	}
 }
@@ -181,7 +181,7 @@ func TestClaimJobSkipsJobsNotYetDue(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), "UPDATE jobs SET run_at = now() + interval '1 hour'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.ClaimJob(context.Background()); err != nil || ok {
+	if _, ok, err := s.ClaimJob(context.Background(), time.Hour); err != nil || ok {
 		t.Errorf("claim: ok=%v err=%v, want no job", ok, err)
 	}
 }
@@ -199,7 +199,7 @@ func TestClaimJobInParallelTakesEachJobOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for {
-				job, ok, err := s.ClaimJob(context.Background())
+				job, ok, err := s.ClaimJob(context.Background(), time.Hour)
 				if err != nil {
 					t.Error(err)
 					return
@@ -230,22 +230,24 @@ func TestJobOutcomes(t *testing.T) {
 	ctx := context.Background()
 	saveJobs(t, s, 3)
 
+	var jobs []Job
 	var ids []int64
 	for range 3 {
-		job, ok, err := s.ClaimJob(ctx)
+		job, ok, err := s.ClaimJob(ctx, time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("claim: ok=%v err=%v", ok, err)
 		}
+		jobs = append(jobs, job)
 		ids = append(ids, job.ID)
 	}
 
-	if err := s.CompleteJob(ctx, ids[0]); err != nil {
+	if err := s.CompleteJob(ctx, jobs[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RetryJob(ctx, ids[1], "timeout", time.Hour); err != nil {
+	if err := s.RetryJob(ctx, jobs[1], "timeout", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailJob(ctx, ids[2], "bad input"); err != nil {
+	if err := s.FailJob(ctx, jobs[2], "bad input"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,7 +262,53 @@ func TestJobOutcomes(t *testing.T) {
 	}
 
 	// The retried job isn't due for an hour, so nothing can be claimed.
-	if _, ok, err := s.ClaimJob(ctx); err != nil || ok {
+	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
 		t.Errorf("claim: ok=%v err=%v, want no job", ok, err)
+	}
+}
+
+func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+	saveJobs(t, s, 1)
+
+	first, ok, err := s.ClaimJob(ctx, time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	// Running for less than staleAfter: the worker may still be on it.
+	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
+		t.Fatalf("claim of a live job: ok=%v err=%v, want no job", ok, err)
+	}
+
+	// Pretend the worker died two hours ago.
+	if _, err := pool.Exec(ctx, "UPDATE jobs SET updated_at = now() - interval '2 hours'"); err != nil {
+		t.Fatal(err)
+	}
+	second, ok, err := s.ClaimJob(ctx, time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("claim of a stale job: ok=%v err=%v", ok, err)
+	}
+	if second.ID != first.ID || second.Attempts != 2 {
+		t.Errorf("reclaimed %+v, want job %d on attempt 2", second, first.ID)
+	}
+
+	// The first worker finishing late must not overwrite the new run.
+	if err := s.CompleteJob(ctx, first); !errors.Is(err, ErrJobLost) {
+		t.Errorf("late complete: err = %v, want ErrJobLost", err)
+	}
+	if err := s.FailJob(ctx, first, "late"); !errors.Is(err, ErrJobLost) {
+		t.Errorf("late fail: err = %v, want ErrJobLost", err)
+	}
+	if r := getJob(t, pool, first.ID); r.status != "running" || r.attempts != 2 {
+		t.Errorf("row = %+v, want still running on attempt 2", r)
+	}
+
+	if err := s.CompleteJob(ctx, second); err != nil {
+		t.Errorf("complete by current holder: %v", err)
+	}
+	if r := getJob(t, pool, first.ID); r.status != "done" {
+		t.Errorf("row = %+v, want done", r)
 	}
 }

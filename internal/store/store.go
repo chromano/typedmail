@@ -80,21 +80,33 @@ type Job struct {
 	Attempts  int
 }
 
-// ClaimJob marks the oldest due queued job as running and returns it. ok is
-// false when no job is due. SKIP LOCKED lets several workers claim in
-// parallel without taking the same job, and the claim commits right away so
-// the job itself runs outside any transaction.
-func (s *Store) ClaimJob(ctx context.Context) (job Job, ok bool, err error) {
+// ErrJobLost is returned when recording a job's outcome finds the job no
+// longer held by that attempt: it ran past staleAfter and was claimed again.
+var ErrJobLost = errors.New("job was reclaimed by another worker")
+
+// ClaimJob marks the oldest due job as running and returns it. ok is false
+// when no job is due. A job is due when it is queued and its run_at has
+// passed, or when it has been running for longer than staleAfter, which means
+// the worker running it died. staleAfter must be longer than any run can
+// take, or a slow job would be run twice.
+//
+// SKIP LOCKED lets several workers claim in parallel without taking the same
+// job, and the claim commits right away so the job itself runs outside any
+// transaction. updated_at records when the job was claimed; nothing else
+// writes to a running job.
+func (s *Store) ClaimJob(ctx context.Context, staleAfter time.Duration) (job Job, ok bool, err error) {
 	err = s.pool.QueryRow(ctx, `
 		UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = now()
 		WHERE id = (
 			SELECT id FROM jobs
-			WHERE status = 'queued' AND run_at <= now()
+			WHERE (status = 'queued' AND run_at <= now())
+			   OR (status = 'running' AND updated_at < now() - $1 * interval '1 millisecond')
 			ORDER BY run_at, id
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
 		RETURNING id, kind, message_id, attempts`,
+		staleAfter.Milliseconds(),
 	).Scan(&job.ID, &job.Kind, &job.MessageID, &job.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Job{}, false, nil
@@ -103,28 +115,35 @@ func (s *Store) ClaimJob(ctx context.Context) (job Job, ok bool, err error) {
 }
 
 // CompleteJob marks a running job as done.
-func (s *Store) CompleteJob(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx,
-		"UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1", id)
-	return err
+func (s *Store) CompleteJob(ctx context.Context, job Job) error {
+	return s.finishJob(ctx, job, "status = 'done', last_error = NULL")
 }
 
 // RetryJob puts a failed job back in the queue, due after delay.
-func (s *Store) RetryJob(ctx context.Context, id int64, lastError string, delay time.Duration) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE jobs SET status = 'queued', last_error = $2,
-			run_at = now() + $3 * interval '1 millisecond', updated_at = now()
-		WHERE id = $1`,
-		id, lastError, delay.Milliseconds())
-	return err
+func (s *Store) RetryJob(ctx context.Context, job Job, lastError string, delay time.Duration) error {
+	return s.finishJob(ctx, job,
+		"status = 'queued', last_error = $3, run_at = now() + $4 * interval '1 millisecond'",
+		lastError, delay.Milliseconds())
 }
 
 // FailJob marks a job as failed for good.
-func (s *Store) FailJob(ctx context.Context, id int64, lastError string) error {
-	_, err := s.pool.Exec(ctx,
-		"UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
-		id, lastError)
-	return err
+func (s *Store) FailJob(ctx context.Context, job Job, lastError string) error {
+	return s.finishJob(ctx, job, "status = 'failed', last_error = $3", lastError)
+}
+
+// finishJob applies set to the job only if it is still running under the same
+// attempt, so a worker that lost its job can't overwrite the new run's outcome.
+func (s *Store) finishJob(ctx context.Context, job Job, set string, args ...any) error {
+	tag, err := s.pool.Exec(ctx,
+		"UPDATE jobs SET "+set+", updated_at = now() WHERE id = $1 AND attempts = $2 AND status = 'running'",
+		append([]any{job.ID, job.Attempts}, args...)...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrJobLost
+	}
+	return nil
 }
 
 // Ping reports whether the database is reachable.
