@@ -131,6 +131,12 @@ func (s *Store) FailJob(ctx context.Context, job Job, lastError string) error {
 	return s.finishJob(ctx, job, "status = 'failed', last_error = $3", lastError)
 }
 
+// ReleaseJob puts a job that was interrupted, not failed, back in the queue,
+// due now, and gives back the attempt it used.
+func (s *Store) ReleaseJob(ctx context.Context, job Job) error {
+	return s.finishJob(ctx, job, "status = 'queued', attempts = attempts - 1, run_at = now()")
+}
+
 // finishJob applies set to the job only if it is still running under the same
 // attempt, so a worker that lost its job can't overwrite the new run's outcome.
 func (s *Store) finishJob(ctx context.Context, job Job, set string, args ...any) error {

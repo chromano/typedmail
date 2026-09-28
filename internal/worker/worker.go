@@ -19,6 +19,7 @@ type Queue interface {
 	CompleteJob(ctx context.Context, job store.Job) error
 	RetryJob(ctx context.Context, job store.Job, lastError string, delay time.Duration) error
 	FailJob(ctx context.Context, job store.Job, lastError string) error
+	ReleaseJob(ctx context.Context, job store.Job) error
 }
 
 // Handler runs one job. Returning an error retries the job, unless the error
@@ -36,11 +37,14 @@ func Permanent(err error) error { return permanentError{err} }
 type Config struct {
 	Concurrency  int           // jobs run in parallel; default 4
 	PollInterval time.Duration // wait when the queue is empty; default 1s
-	MaxAttempts  int           // runs before a job is failed for good; default 5
+	MaxAttempts  int           // runs before a job is failed for good; default 10
 	JobTimeout   time.Duration // limit for one run; default 5m. A job running for twice this long is reclaimed
-	BaseBackoff  time.Duration // delay before the first retry, doubled after each; default 30s
-	MaxBackoff   time.Duration // cap on the retry delay; default 1h
+	BaseBackoff  time.Duration // delay before the first retry, doubled after each; default 1m
+	MaxBackoff   time.Duration // cap on the retry delay; default 2h
 }
+
+// The defaults spread 10 attempts over about 6 hours (1m, 2m, 4m ... 2h, 2h),
+// so a job survives an outage of the LLM provider or the database.
 
 type Worker struct {
 	queue    Queue
@@ -57,22 +61,24 @@ func New(queue Queue, handlers map[string]Handler, cfg Config, log *slog.Logger)
 		cfg.PollInterval = time.Second
 	}
 	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 5
+		cfg.MaxAttempts = 10
 	}
 	if cfg.JobTimeout <= 0 {
 		cfg.JobTimeout = 5 * time.Minute
 	}
 	if cfg.BaseBackoff <= 0 {
-		cfg.BaseBackoff = 30 * time.Second
+		cfg.BaseBackoff = time.Minute
 	}
 	if cfg.MaxBackoff <= 0 {
-		cfg.MaxBackoff = time.Hour
+		cfg.MaxBackoff = 2 * time.Hour
 	}
 	return &Worker{queue: queue, handlers: handlers, cfg: cfg, log: log}
 }
 
-// Run processes jobs until ctx is cancelled. It then stops claiming new jobs
-// and returns once the jobs already running have finished and been recorded.
+// Run processes jobs until ctx is cancelled. It then stops claiming new jobs,
+// cancels the running ones, and returns once their outcome is recorded. A job
+// interrupted this way goes back in the queue without using up an attempt, so
+// deploys and restarts don't count against it.
 func (w *Worker) Run(ctx context.Context) {
 	var wg sync.WaitGroup
 	for range w.cfg.Concurrency {
@@ -98,18 +104,20 @@ func (w *Worker) loop(ctx context.Context) {
 			}
 			continue
 		}
-		// A claimed job runs to the end even during shutdown, so it isn't
-		// left marked as running.
-		w.process(context.WithoutCancel(ctx), job)
+		w.process(ctx, job)
 	}
 }
 
+// process runs a claimed job. ctx is cancelled on shutdown; the outcome is
+// recorded even then.
 func (w *Worker) process(ctx context.Context, job store.Job) {
 	log := w.log.With("job_id", job.ID, "kind", job.Kind, "message_id", job.MessageID, "attempt", job.Attempts)
+	record := context.WithoutCancel(ctx)
 	if job.Attempts > w.cfg.MaxAttempts {
-		// Reclaimed after its worker died on the last allowed attempt.
+		// Reclaimed after its worker died on the last allowed attempt. Crashes
+		// count, or a message that crashes the worker would loop forever.
 		log.Error("job failed", "err", "worker died while running the job")
-		if err := w.queue.FailJob(ctx, job, "worker died while running the job"); err != nil {
+		if err := w.queue.FailJob(record, job, "worker died while running the job"); err != nil {
 			log.Error("record job outcome", "err", err)
 		}
 		return
@@ -122,14 +130,17 @@ func (w *Worker) process(ctx context.Context, job store.Job) {
 	switch {
 	case err == nil:
 		log.Info("job done", "duration_ms", time.Since(start).Milliseconds())
-		err = w.queue.CompleteJob(ctx, job)
+		err = w.queue.CompleteJob(record, job)
+	case ctx.Err() != nil:
+		log.Info("job interrupted by shutdown; requeued", "err", err)
+		err = w.queue.ReleaseJob(record, job)
 	case errors.As(err, &permanent) || job.Attempts >= w.cfg.MaxAttempts:
 		log.Error("job failed", "err", err)
-		err = w.queue.FailJob(ctx, job, err.Error())
+		err = w.queue.FailJob(record, job, err.Error())
 	default:
 		delay := w.backoff(job.Attempts)
 		log.Warn("job will be retried", "err", err, "retry_in", delay)
-		err = w.queue.RetryJob(ctx, job, err.Error(), delay)
+		err = w.queue.RetryJob(record, job, err.Error(), delay)
 	}
 	if errors.Is(err, store.ErrJobLost) {
 		log.Warn("job outcome discarded: it ran too long and was claimed again")

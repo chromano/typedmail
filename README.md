@@ -63,4 +63,5 @@ make send    # post testdata/postmark_inbound.json → {"status":"accepted","id"
 make send    # again                             → {"status":"duplicate"}
 make send SAMPLE=testdata/postmark_invoice.json   # or postmark_shipment.json
 make test    # unit + Postgres integration tests (needs Go)
+make requeue # retry failed jobs from scratch (JOB=<id> for one)
 ```

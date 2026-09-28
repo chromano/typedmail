@@ -312,3 +312,25 @@ func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
 		t.Errorf("row = %+v, want done", r)
 	}
 }
+
+func TestReleaseJobGivesBackTheAttempt(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+	saveJobs(t, s, 1)
+
+	job, ok, err := s.ClaimJob(ctx, time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if err := s.ReleaseJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if r := getJob(t, pool, job.ID); r.status != "queued" || r.attempts != 0 || !r.due {
+		t.Errorf("row = %+v, want queued, due now, 0 attempts", r)
+	}
+
+	again, ok, err := s.ClaimJob(ctx, time.Hour)
+	if err != nil || !ok || again.ID != job.ID || again.Attempts != 1 {
+		t.Errorf("reclaim = %+v ok=%v err=%v, want job %d on attempt 1", again, ok, err, job.ID)
+	}
+}

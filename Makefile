@@ -5,7 +5,7 @@ INBOUND_PASSWORD  ?= dev-secret
 
 export DATABASE_URL TEST_DATABASE_URL INBOUND_USER INBOUND_PASSWORD
 
-.PHONY: db up down run test seed send
+.PHONY: db up down run test seed send requeue
 
 db:    ## start Postgres only
 	docker compose up -d --wait db
@@ -39,3 +39,8 @@ send:  ## post a sample email to the webhook (SAMPLE=testdata/postmark_invoice.j
 		-H 'Content-Type: application/json' \
 		--data @$(SAMPLE) \
 		http://localhost:8080/webhooks/postmark; echo
+
+requeue:  ## requeue failed jobs with a fresh set of attempts (JOB=<id> for one)
+	@echo "UPDATE jobs SET status = 'queued', attempts = 0, run_at = now(), updated_at = now() \
+		WHERE status = 'failed' AND id = coalesce(nullif(:'job', '')::bigint, id) RETURNING 'requeued job ' || id" | \
+	docker compose exec -T db psql -U typedmail -q -At -v ON_ERROR_STOP=1 -v job="$(JOB)"

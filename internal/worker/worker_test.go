@@ -19,6 +19,7 @@ type fakeQueue struct {
 	completed []int64
 	failed    map[int64]string
 	retried   map[int64]time.Duration
+	released  []int64
 }
 
 func newFakeQueue(jobs ...store.Job) *fakeQueue {
@@ -57,10 +58,17 @@ func (q *fakeQueue) FailJob(_ context.Context, job store.Job, lastError string) 
 	return nil
 }
 
+func (q *fakeQueue) ReleaseJob(_ context.Context, job store.Job) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.released = append(q.released, job.ID)
+	return nil
+}
+
 func (q *fakeQueue) outcomes() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.completed) + len(q.failed) + len(q.retried)
+	return len(q.completed) + len(q.failed) + len(q.retried) + len(q.released)
 }
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -148,21 +156,9 @@ func TestBackoffIsCapped(t *testing.T) {
 	}
 }
 
-func TestShutdownWaitsForRunningJob(t *testing.T) {
-	q := newFakeQueue(store.Job{ID: 1, Kind: "slow", Attempts: 1})
-	started := make(chan struct{})
-	w := New(q, map[string]Handler{
-		"slow": func(ctx context.Context, _ store.Job) error {
-			close(started)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-				return nil
-			}
-		},
-	}, Config{PollInterval: time.Millisecond}, discard)
-
+// runAndStop starts the worker, waits for the handler to signal it has
+// started, then shuts the worker down and waits for it to return.
+func runAndStop(w *Worker, started <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -172,9 +168,56 @@ func TestShutdownWaitsForRunningJob(t *testing.T) {
 	<-started
 	cancel()
 	<-done
+}
 
-	if len(q.completed) != 1 {
-		t.Errorf("completed = %v, want the running job to finish despite shutdown", q.completed)
+func TestDefaultRetriesSpanHours(t *testing.T) {
+	w := New(nil, nil, Config{}, discard)
+	var total time.Duration
+	for attempt := 1; attempt < w.cfg.MaxAttempts; attempt++ {
+		total += w.backoff(attempt)
+	}
+	// 1+2+4+8+16+32+64+120+120 minutes before the last attempt.
+	if want := 367 * time.Minute; total != want {
+		t.Errorf("retries span %v, want %v", total, want)
+	}
+}
+
+func TestShutdownReleasesInterruptedJob(t *testing.T) {
+	q := newFakeQueue(store.Job{ID: 1, Kind: "slow", Attempts: 3})
+	started := make(chan struct{})
+	w := New(q, map[string]Handler{
+		"slow": func(ctx context.Context, _ store.Job) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}, Config{PollInterval: time.Millisecond}, discard)
+
+	runAndStop(w, started)
+
+	if len(q.released) != 1 || q.released[0] != 1 {
+		t.Errorf("released = %v, want [1]", q.released)
+	}
+	if len(q.retried)+len(q.failed)+len(q.completed) != 0 {
+		t.Errorf("retried = %v, failed = %v, completed = %v, want only a release", q.retried, q.failed, q.completed)
+	}
+}
+
+func TestShutdownRecordsJobThatFinishesAnyway(t *testing.T) {
+	q := newFakeQueue(store.Job{ID: 1, Kind: "quick", Attempts: 1})
+	started := make(chan struct{})
+	w := New(q, map[string]Handler{
+		"quick": func(ctx context.Context, _ store.Job) error {
+			close(started)
+			<-ctx.Done()
+			return nil // finished its work before noticing the shutdown
+		},
+	}, Config{PollInterval: time.Millisecond}, discard)
+
+	runAndStop(w, started)
+
+	if len(q.completed) != 1 || len(q.released) != 0 {
+		t.Errorf("completed = %v, released = %v, want the job completed", q.completed, q.released)
 	}
 }
 
