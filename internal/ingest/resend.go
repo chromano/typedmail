@@ -97,8 +97,12 @@ func resendToInbound(ev resendEvent, raw []byte) (store.InboundMessage, error) {
 		return store.InboundMessage{}, errors.New("missing to")
 	}
 	// orders@<id>.resend.app, or orders@mail.example.com on a custom domain,
-	// goes to the orders inbox.
+	// goes to the orders inbox. With a +tag, the tag picks the inbox, as with
+	// Postmark: support+invoices@mail.example.com goes to invoices.
 	local, _, found := strings.Cut(address(d.To[0]), "@")
+	if _, tag, ok := strings.Cut(local, "+"); ok && tag != "" {
+		local = tag
+	}
 	if !found || local == "" {
 		return store.InboundMessage{}, errors.New("cannot determine inbox from recipient")
 	}

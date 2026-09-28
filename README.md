@@ -40,7 +40,7 @@ Resend   ──webhook──▶ POST /webhooks/resend     (Svix signature)
   resends, and the same email arriving through both providers are stored once.
 - **Inbox routing.** `<hash>+orders@inbound.postmarkapp.com` and
   `orders@<id>.resend.app` route to the `orders` inbox. With a custom inbound
-  domain, `orders@mail.example.com` does too.
+  domain, `orders@mail.example.com` and `support+orders@mail.example.com` do too.
 - **One schema per inbox.** Each inbox defines the JSON it produces as a JSON
   Schema, so `orders` and `invoices` can return different shapes.
 - **Background work.** Workers claim jobs with `FOR UPDATE SKIP LOCKED`, so
@@ -175,12 +175,13 @@ ngrok http 8080
 They can also go in `.env`. Set `ANTHROPIC_API_KEY` too, or messages are
 fetched but not extracted.
 
-**3. Send an email** to the inbox you want, by its name before the `@`:
+**3. Send an email** to the inbox you want, by its name before the `@`, or
+after a `+` if the address has one:
 
 ```
 orders@<id>.resend.app
 invoices@<id>.resend.app
-shipments@<id>.resend.app
+support+shipments@mail.example.com
 ```
 
 The app log shows `message accepted` with `"provider":"resend"`, then a `fetch`
@@ -193,6 +194,6 @@ job, then `extracted`; `make results` shows the result.
 | `404` from `/webhooks/resend` | `RESEND_WEBHOOK_SECRET` isn't set, so the endpoint doesn't exist. Run `make up` after setting it. |
 | `401 invalid signature` | The secret doesn't match the endpoint's signing secret in Resend, or the request is more than 5 minutes old (Resend replaying an old delivery, or your clock is off). |
 | `{"status":"ignored"}` | The webhook sent an event other than `email.received`; it's safe to leave other events on. |
-| `{"status":"dropped"}` | No inbox with the name before the `@`; check `make seed` ran. |
+| `{"status":"dropped"}` | No inbox with that name (the part before the `@`, or after the `+`); check `make seed` ran. |
 | Job `fetch` stays `queued` | `RESEND_API_KEY` isn't set; the log says so at startup. |
 | Job `fetch` `failed` | Resend doesn't know the email (404), or keeps rejecting the key; `docker compose logs app \| grep 'job failed'` shows which. |
