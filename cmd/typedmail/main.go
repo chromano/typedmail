@@ -15,6 +15,7 @@ import (
 
 	"github.com/chromano/typedmail/internal/ingest"
 	"github.com/chromano/typedmail/internal/store"
+	"github.com/chromano/typedmail/internal/worker"
 	"github.com/chromano/typedmail/migrations"
 )
 
@@ -62,15 +63,28 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	wrk := worker.New(st, map[string]worker.Handler{
+		store.JobExtract: func(ctx context.Context, job store.Job) error {
+			log.Info("extraction not implemented yet; marking job done", "message_id", job.MessageID)
+			return nil
+		},
+	}, worker.Config{}, log)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		wrk.Run(ctx)
+	}()
+
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("listening", "addr", srv.Addr)
 		errc <- srv.ListenAndServe()
 	}()
 
+	var serveErr error
 	select {
-	case err := <-errc:
-		return err
+	case serveErr = <-errc:
+		stop() // stop the worker too
 	case <-ctx.Done():
 	}
 
@@ -80,7 +94,8 @@ func run(log *slog.Logger) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+	<-workerDone // let running jobs finish and record their outcome
+	return serveErr
 }
 
 type config struct {

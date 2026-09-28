@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -69,6 +70,61 @@ func (s *Store) SaveInbound(ctx context.Context, m InboundMessage) (id int64, cr
 		return err
 	})
 	return id, created, err
+}
+
+// Job is a claimed unit of work. Attempts counts this run.
+type Job struct {
+	ID        int64
+	Kind      string
+	MessageID int64
+	Attempts  int
+}
+
+// ClaimJob marks the oldest due queued job as running and returns it. ok is
+// false when no job is due. SKIP LOCKED lets several workers claim in
+// parallel without taking the same job, and the claim commits right away so
+// the job itself runs outside any transaction.
+func (s *Store) ClaimJob(ctx context.Context) (job Job, ok bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		UPDATE jobs SET status = 'running', attempts = attempts + 1, updated_at = now()
+		WHERE id = (
+			SELECT id FROM jobs
+			WHERE status = 'queued' AND run_at <= now()
+			ORDER BY run_at, id
+			FOR UPDATE SKIP LOCKED
+			LIMIT 1
+		)
+		RETURNING id, kind, message_id, attempts`,
+	).Scan(&job.ID, &job.Kind, &job.MessageID, &job.Attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Job{}, false, nil
+	}
+	return job, err == nil, err
+}
+
+// CompleteJob marks a running job as done.
+func (s *Store) CompleteJob(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx,
+		"UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1", id)
+	return err
+}
+
+// RetryJob puts a failed job back in the queue, due after delay.
+func (s *Store) RetryJob(ctx context.Context, id int64, lastError string, delay time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE jobs SET status = 'queued', last_error = $2,
+			run_at = now() + $3 * interval '1 millisecond', updated_at = now()
+		WHERE id = $1`,
+		id, lastError, delay.Milliseconds())
+	return err
+}
+
+// FailJob marks a job as failed for good.
+func (s *Store) FailJob(ctx context.Context, id int64, lastError string) error {
+	_, err := s.pool.Exec(ctx,
+		"UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+		id, lastError)
+	return err
 }
 
 // Ping reports whether the database is reachable.
