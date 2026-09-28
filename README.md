@@ -58,8 +58,9 @@ Requires Docker. Go 1.25+ is only needed to run outside Docker.
 
 ```sh
 make up      # build and start app + Postgres
-make seed    # create the "orders" inbox
+make seed    # create an inbox per schemas/<slug>.json (orders, invoices, shipments)
 make send    # post testdata/postmark_inbound.json → {"status":"accepted","id":1}
 make send    # again                             → {"status":"duplicate"}
+make send SAMPLE=testdata/postmark_invoice.json   # or postmark_shipment.json
 make test    # unit + Postgres integration tests (needs Go)
 ```

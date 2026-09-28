@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shipment notification",
+  "description": "A shipping update from a carrier or supplier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["carrier", "tracking_number", "status"],
+  "properties": {
+    "carrier": { "type": "string" },
+    "tracking_number": { "type": "string" },
+    "tracking_url": { "type": ["string", "null"], "format": "uri" },
+    "status": {
+      "type": "string",
+      "enum": ["label_created", "shipped", "in_transit", "out_for_delivery", "delivered", "exception"]
+    },
+    "po_number": { "type": ["string", "null"] },
+    "shipped_at": { "type": ["string", "null"], "format": "date-time" },
+    "estimated_delivery": { "type": ["string", "null"], "format": "date" },
+    "exception_reason": { "type": ["string", "null"] },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description"],
+        "properties": {
+          "sku": { "type": ["string", "null"] },
+          "description": { "type": "string" },
+          "quantity": { "type": ["integer", "null"] }
+        }
+      }
+    }
+  }
+}

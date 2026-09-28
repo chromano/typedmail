@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Purchase order",
+  "description": "A purchase order sent by a customer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["po_number", "buyer", "items"],
+  "properties": {
+    "po_number": { "type": "string" },
+    "buyer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "company": { "type": ["string", "null"] },
+        "email": { "type": "string", "format": "email" }
+      }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "quantity"],
+        "properties": {
+          "sku": { "type": ["string", "null"] },
+          "description": { "type": "string" },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "unit_price": { "$ref": "#/$defs/amount_or_null" }
+        }
+      }
+    },
+    "total": { "$ref": "#/$defs/amount_or_null" },
+    "currency": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
+    "deliver_by": { "type": ["string", "null"], "format": "date" },
+    "ship_to": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "street": { "type": ["string", "null"] },
+        "city": { "type": ["string", "null"] },
+        "region": { "type": ["string", "null"] },
+        "postal_code": { "type": ["string", "null"] },
+        "country": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "amount_or_null": { "type": ["string", "null"], "pattern": "^-?\\d+(\\.\\d+)?$" }
+  }
+}

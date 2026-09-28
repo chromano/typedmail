@@ -1,0 +1,20 @@
+{
+  "From": "billing@northwind-print.com",
+  "FromName": "Northwind Print Billing",
+  "FromFull": { "Email": "billing@northwind-print.com", "Name": "Northwind Print Billing", "MailboxHash": "" },
+  "To": "\"typedmail\" <4f2a9c+invoices@inbound.postmarkapp.com>",
+  "OriginalRecipient": "4f2a9c+invoices@inbound.postmarkapp.com",
+  "MailboxHash": "invoices",
+  "Subject": "Invoice INV-2026-0918 for PO 10442",
+  "MessageID": "b1c9e2a4-3f6d-4c1e-9a7b-2d8e5f0c1a93",
+  "Date": "Tue, 29 Sep 2026 10:05:44 -0400",
+  "TextBody": "Hello,\n\nPlease find our invoice INV-2026-0918 dated Sep 29, 2026 for your PO 10442.\n\n- 200 x Die-cut stickers 3x3in @ $1.35 = $270.00\n- 50 x Holographic labels 2x4in @ $2.85 = $142.50\n\nSubtotal: $412.50\nSales tax (5.5%): $22.69\nTotal due: $435.19 USD\n\nPayment is due by Oct 29, 2026 by bank transfer, reference INV-2026-0918.\n\nNorthwind Print Co. (EIN 12-3456789)\nbilling@northwind-print.com",
+  "HtmlBody": "",
+  "StrippedTextReply": "",
+  "Tag": "",
+  "Headers": [
+    { "Name": "Message-ID", "Value": "<inv-2026-0918.4c1e@northwind-print.com>" },
+    { "Name": "X-Spam-Status", "Value": "No" }
+  ],
+  "Attachments": []
+}

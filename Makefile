@@ -22,12 +22,20 @@ run: db ## run the app on the host (needs Go)
 test: db ## unit + Postgres integration tests
 	go test ./...
 
-seed:  ## create the "orders" inbox
-	docker compose exec -T db psql -U typedmail -c \
-		"INSERT INTO inboxes (slug) VALUES ('orders') ON CONFLICT DO NOTHING"
+seed:  ## create or update one inbox per schemas/<slug>.json
+	@for f in schemas/*.json; do \
+		slug=$$(basename $$f .json); \
+		echo "seeding $$slug"; \
+		echo "INSERT INTO inboxes (slug, schema) VALUES (:'slug', :'schema'::jsonb) \
+			ON CONFLICT (slug) DO UPDATE SET schema = EXCLUDED.schema" | \
+		docker compose exec -T db psql -U typedmail -q -v ON_ERROR_STOP=1 \
+			-v slug="$$slug" -v schema="$$(cat $$f)" || exit 1; \
+	done
 
-send:  ## post the sample email to the webhook
+SAMPLE ?= testdata/postmark_inbound.json
+
+send:  ## post a sample email to the webhook (SAMPLE=testdata/postmark_invoice.json)
 	curl -s -u $(INBOUND_USER):$(INBOUND_PASSWORD) \
 		-H 'Content-Type: application/json' \
-		--data @testdata/postmark_inbound.json \
+		--data @$(SAMPLE) \
 		http://localhost:8080/webhooks/postmark; echo

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Supplier invoice",
+  "description": "An invoice sent by a supplier.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["invoice_number", "vendor", "issue_date", "total", "currency"],
+  "properties": {
+    "invoice_number": { "type": "string" },
+    "po_number": { "type": ["string", "null"] },
+    "vendor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "email": { "type": ["string", "null"], "format": "email" },
+        "tax_id": { "type": ["string", "null"] }
+      }
+    },
+    "issue_date": { "type": "string", "format": "date" },
+    "due_date": { "type": ["string", "null"], "format": "date" },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "amount"],
+        "properties": {
+          "description": { "type": "string" },
+          "quantity": { "type": ["number", "null"] },
+          "unit_price": { "$ref": "#/$defs/amount_or_null" },
+          "amount": { "$ref": "#/$defs/amount" }
+        }
+      }
+    },
+    "subtotal": { "$ref": "#/$defs/amount_or_null" },
+    "tax": { "$ref": "#/$defs/amount_or_null" },
+    "total": { "$ref": "#/$defs/amount" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "payment": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "type": ["string", "null"],
+          "enum": ["bank_transfer", "card", "check", "other", null]
+        },
+        "iban": { "type": ["string", "null"] },
+        "reference": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "amount": { "type": "string", "pattern": "^-?\\d+(\\.\\d+)?$" },
+    "amount_or_null": { "type": ["string", "null"], "pattern": "^-?\\d+(\\.\\d+)?$" }
+  }
+}

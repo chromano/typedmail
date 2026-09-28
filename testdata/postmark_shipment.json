@@ -1,0 +1,20 @@
+{
+  "From": "shipping@northwind-print.com",
+  "FromName": "Northwind Print Shipping",
+  "FromFull": { "Email": "shipping@northwind-print.com", "Name": "Northwind Print Shipping", "MailboxHash": "" },
+  "To": "\"typedmail\" <4f2a9c+shipments@inbound.postmarkapp.com>",
+  "OriginalRecipient": "4f2a9c+shipments@inbound.postmarkapp.com",
+  "MailboxHash": "shipments",
+  "Subject": "Your order for PO 10442 has shipped",
+  "MessageID": "e7a04f1b-92c3-4d5e-8b6a-0f3c7d9e2b18",
+  "Date": "Fri, 02 Oct 2026 16:22:10 -0400",
+  "TextBody": "Good news! Your order for PO 10442 shipped today via UPS Ground.\n\nTracking number: 1Z999AA10123456784\nTrack it: https://www.ups.com/track?tracknum=1Z999AA10123456784\n\nEstimated delivery: Wednesday, Oct 7, 2026\n\nIn this shipment:\n- 200 x Die-cut stickers 3x3in (SKU DC-33)\n- 50 x Holographic labels 2x4in (SKU HL-24)\n\nNorthwind Print Co.",
+  "HtmlBody": "",
+  "StrippedTextReply": "",
+  "Tag": "",
+  "Headers": [
+    { "Name": "Message-ID", "Value": "<ship-10442.8b6a@northwind-print.com>" },
+    { "Name": "X-Spam-Status", "Value": "No" }
+  ],
+  "Attachments": []
+}
