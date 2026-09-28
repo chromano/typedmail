@@ -21,7 +21,8 @@ services:
     environment:
       DATABASE_URL: postgres://typedmail:typedmail@db:5432/typedmail?sslmode=disable
       INBOUND_USER: postmark
-      INBOUND_PASSWORD: dev-secret
+      # Set your own before exposing the app (e.g. through ngrok).
+      INBOUND_PASSWORD: ${INBOUND_PASSWORD:-dev-secret}
       # From your shell or .env; extraction is disabled when unset.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EXTRACT_MODEL: ${EXTRACT_MODEL:-}

@@ -69,4 +69,76 @@ make send    # again                             → {"status":"duplicate"}
 make send SAMPLE=testdata/postmark_invoice.json   # or postmark_shipment.json
 make test    # unit + Postgres integration tests (needs Go)
 make requeue # retry failed jobs from scratch (JOB=<id> for one)
+make results # latest extractions next to their emails
 ```
+
+## Receiving real email with Postmark and ngrok
+
+Postmark receives the email and posts it to the webhook; ngrok gives your
+local app a public HTTPS URL Postmark can reach. You need a Postmark account
+with a server, and an ngrok account with its authtoken configured
+(`ngrok config add-authtoken <token>`).
+
+**1. Start the app with your own webhook password.** The default `dev-secret`
+is in this repo, and anyone who finds your ngrok URL could post to the webhook
+with it.
+
+```sh
+export INBOUND_PASSWORD=$(openssl rand -hex 16)   # hex, so it's safe in a URL
+make up && make seed
+```
+
+Keep the variable exported in that shell: `make up` passes it to the app and
+`make send` uses it too. Set `ANTHROPIC_API_KEY` as described above, or
+messages are stored but not extracted.
+
+**2. Expose it with ngrok** in another terminal:
+
+```sh
+ngrok http 8080
+```
+
+Copy the `https://…` address from the `Forwarding` line and check it reaches
+the app: `curl https://<forwarding-host>/healthz` should print `ok`.
+
+**3. Point Postmark at it.** In your Postmark server, open the inbound message
+stream's settings and:
+
+- set the inbound webhook URL, with the credentials in it:
+
+  ```
+  https://postmark:<INBOUND_PASSWORD>@<forwarding-host>/webhooks/postmark
+  ```
+
+- note the inbound address shown there, `<hash>@inbound.postmarkapp.com`.
+
+**4. Send an email** from any mailbox to the inbox you want, by adding its
+name after a `+`:
+
+```
+<hash>+orders@inbound.postmarkapp.com
+<hash>+invoices@inbound.postmarkapp.com
+<hash>+shipments@inbound.postmarkapp.com
+```
+
+**5. Watch it arrive.**
+
+- `http://localhost:4040` is ngrok's inspector: it shows each webhook request
+  from Postmark and the app's response.
+- `docker compose logs -f app` shows `message accepted`, then `extracted` once
+  the worker is done.
+- `make results` shows the email next to the extracted JSON.
+
+### When it doesn't work
+
+| What you see | Why |
+|---|---|
+| `401` in the ngrok inspector | The password in the webhook URL doesn't match `INBOUND_PASSWORD`. After changing it, run `make up` again. |
+| `{"status":"dropped"}` | No inbox with that name: the address has no `+inbox` part, or `make seed` hasn't run. |
+| `403` | The payload can never be accepted (no sender or Message-ID). Postmark stops retrying. |
+| Postmark can't reach the webhook | ngrok isn't running, or its URL changed: free ngrok URLs change on every restart unless you use your static domain, so update the webhook URL. |
+| Message stored, job stays `queued` | The app has no `ANTHROPIC_API_KEY`; the log says so at startup. |
+| Job `failed` | `docker compose logs app \| grep 'job failed'` shows why. After fixing the cause, `make requeue`. |
+
+If the app is down when email arrives, Postmark retries the webhook for
+about 10 hours, so messages arrive once it's back up.
