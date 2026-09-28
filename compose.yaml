@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: typedmail
+      POSTGRES_PASSWORD: typedmail
+      POSTGRES_DB: typedmail
+    ports:
+      - "5433:5432" # 5433 so it doesn't clash with a Postgres already on the host
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./scripts/create-test-db.sql:/docker-entrypoint-initdb.d/create-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U typedmail"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://typedmail:typedmail@db:5432/typedmail?sslmode=disable
+      INBOUND_USER: postmark
+      INBOUND_PASSWORD: dev-secret
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

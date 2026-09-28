@@ -1,0 +1,20 @@
+{
+  "From": "buyer@acme-retail.com",
+  "FromName": "Dana Buyer",
+  "FromFull": { "Email": "buyer@acme-retail.com", "Name": "Dana Buyer", "MailboxHash": "" },
+  "To": "\"typedmail\" <4f2a9c+orders@inbound.postmarkapp.com>",
+  "OriginalRecipient": "4f2a9c+orders@inbound.postmarkapp.com",
+  "MailboxHash": "orders",
+  "Subject": "PO 10442 - restock",
+  "MessageID": "73e6d360-66eb-11e1-8e72-a8904824019b",
+  "Date": "Mon, 28 Sep 2026 09:14:02 -0300",
+  "TextBody": "Hi,\n\nPlease ship the following for PO 10442:\n\n- 200 x Die-cut stickers 3x3in (SKU DC-33)\n- 50 x Holographic labels 2x4in (SKU HL-24)\n\nTotal: $412.50\nDeliver by Oct 10 to 12 Harbor St, Portland, ME 04101.\n\nThanks,\nDana",
+  "HtmlBody": "",
+  "StrippedTextReply": "",
+  "Tag": "",
+  "Headers": [
+    { "Name": "Message-ID", "Value": "<CAF=po10442.8f1b@mail.acme-retail.com>" },
+    { "Name": "X-Spam-Status", "Value": "No" }
+  ],
+  "Attachments": []
+}

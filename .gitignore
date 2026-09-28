@@ -1,0 +1,4 @@
+/typedmail
+*.test
+*.out
+.env
