@@ -108,10 +108,30 @@ func TestHandler(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "rejects a message without From",
+			name:     "forbids a message without From so the provider doesn't retry",
 			auth:     true,
 			body:     func(p map[string]any) any { delete(p, "From"); return p },
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name: "forbids a message without any Message-ID",
+			auth: true,
+			body: func(p map[string]any) any {
+				p["Headers"] = []any{}
+				delete(p, "MessageID")
+				return p
+			},
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name: "forbids a message whose recipient names no inbox",
+			auth: true,
+			body: func(p map[string]any) any {
+				p["MailboxHash"] = ""
+				p["OriginalRecipient"] = "not-an-address"
+				return p
+			},
+			wantCode: http.StatusForbidden,
 		},
 	}
 

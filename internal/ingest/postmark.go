@@ -70,7 +70,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	msg, err := toInboundMessage(p, raw)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		// Redelivering the same payload can't fix it, and 403 is the one
+		// non-2xx code that makes Postmark stop retrying.
+		h.log.Warn("rejected inbound message", "err", err)
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 
