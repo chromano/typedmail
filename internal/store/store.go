@@ -80,10 +80,6 @@ type Job struct {
 	Attempts  int
 }
 
-// ErrJobLost is returned when recording a job's outcome finds the job no
-// longer held by that attempt: it ran past staleAfter and was claimed again.
-var ErrJobLost = errors.New("job was reclaimed by another worker")
-
 // ClaimJob marks the oldest due job as running and returns it. ok is false
 // when no job is due. A job is due when it is queued and its run_at has
 // passed, or when it has been running for longer than staleAfter, which means
@@ -115,41 +111,28 @@ func (s *Store) ClaimJob(ctx context.Context, staleAfter time.Duration) (job Job
 }
 
 // CompleteJob marks a running job as done.
-func (s *Store) CompleteJob(ctx context.Context, job Job) error {
-	return s.finishJob(ctx, job, "status = 'done', last_error = NULL")
+func (s *Store) CompleteJob(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx,
+		"UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1", id)
+	return err
 }
 
 // RetryJob puts a failed job back in the queue, due after delay.
-func (s *Store) RetryJob(ctx context.Context, job Job, lastError string, delay time.Duration) error {
-	return s.finishJob(ctx, job,
-		"status = 'queued', last_error = $3, run_at = now() + $4 * interval '1 millisecond'",
-		lastError, delay.Milliseconds())
+func (s *Store) RetryJob(ctx context.Context, id int64, lastError string, delay time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE jobs SET status = 'queued', last_error = $2,
+			run_at = now() + $3 * interval '1 millisecond', updated_at = now()
+		WHERE id = $1`,
+		id, lastError, delay.Milliseconds())
+	return err
 }
 
 // FailJob marks a job as failed for good.
-func (s *Store) FailJob(ctx context.Context, job Job, lastError string) error {
-	return s.finishJob(ctx, job, "status = 'failed', last_error = $3", lastError)
-}
-
-// ReleaseJob puts a job that was interrupted, not failed, back in the queue,
-// due now, and gives back the attempt it used.
-func (s *Store) ReleaseJob(ctx context.Context, job Job) error {
-	return s.finishJob(ctx, job, "status = 'queued', attempts = attempts - 1, run_at = now()")
-}
-
-// finishJob applies set to the job only if it is still running under the same
-// attempt, so a worker that lost its job can't overwrite the new run's outcome.
-func (s *Store) finishJob(ctx context.Context, job Job, set string, args ...any) error {
-	tag, err := s.pool.Exec(ctx,
-		"UPDATE jobs SET "+set+", updated_at = now() WHERE id = $1 AND attempts = $2 AND status = 'running'",
-		append([]any{job.ID, job.Attempts}, args...)...)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return ErrJobLost
-	}
-	return nil
+func (s *Store) FailJob(ctx context.Context, id int64, lastError string) error {
+	_, err := s.pool.Exec(ctx,
+		"UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+		id, lastError)
+	return err
 }
 
 // Ping reports whether the database is reachable.

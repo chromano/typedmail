@@ -230,24 +230,22 @@ func TestJobOutcomes(t *testing.T) {
 	ctx := context.Background()
 	saveJobs(t, s, 3)
 
-	var jobs []Job
 	var ids []int64
 	for range 3 {
 		job, ok, err := s.ClaimJob(ctx, time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("claim: ok=%v err=%v", ok, err)
 		}
-		jobs = append(jobs, job)
 		ids = append(ids, job.ID)
 	}
 
-	if err := s.CompleteJob(ctx, jobs[0]); err != nil {
+	if err := s.CompleteJob(ctx, ids[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RetryJob(ctx, jobs[1], "timeout", time.Hour); err != nil {
+	if err := s.RetryJob(ctx, ids[1], "timeout", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FailJob(ctx, jobs[2], "bad input"); err != nil {
+	if err := s.FailJob(ctx, ids[2], "bad input"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,45 +290,5 @@ func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
 	}
 	if second.ID != first.ID || second.Attempts != 2 {
 		t.Errorf("reclaimed %+v, want job %d on attempt 2", second, first.ID)
-	}
-
-	// The first worker finishing late must not overwrite the new run.
-	if err := s.CompleteJob(ctx, first); !errors.Is(err, ErrJobLost) {
-		t.Errorf("late complete: err = %v, want ErrJobLost", err)
-	}
-	if err := s.FailJob(ctx, first, "late"); !errors.Is(err, ErrJobLost) {
-		t.Errorf("late fail: err = %v, want ErrJobLost", err)
-	}
-	if r := getJob(t, pool, first.ID); r.status != "running" || r.attempts != 2 {
-		t.Errorf("row = %+v, want still running on attempt 2", r)
-	}
-
-	if err := s.CompleteJob(ctx, second); err != nil {
-		t.Errorf("complete by current holder: %v", err)
-	}
-	if r := getJob(t, pool, first.ID); r.status != "done" {
-		t.Errorf("row = %+v, want done", r)
-	}
-}
-
-func TestReleaseJobGivesBackTheAttempt(t *testing.T) {
-	s, pool := newTestStore(t)
-	ctx := context.Background()
-	saveJobs(t, s, 1)
-
-	job, ok, err := s.ClaimJob(ctx, time.Hour)
-	if err != nil || !ok {
-		t.Fatalf("claim: ok=%v err=%v", ok, err)
-	}
-	if err := s.ReleaseJob(ctx, job); err != nil {
-		t.Fatal(err)
-	}
-	if r := getJob(t, pool, job.ID); r.status != "queued" || r.attempts != 0 || !r.due {
-		t.Errorf("row = %+v, want queued, due now, 0 attempts", r)
-	}
-
-	again, ok, err := s.ClaimJob(ctx, time.Hour)
-	if err != nil || !ok || again.ID != job.ID || again.Attempts != 1 {
-		t.Errorf("reclaim = %+v ok=%v err=%v, want job %d on attempt 1", again, ok, err, job.ID)
 	}
 }
