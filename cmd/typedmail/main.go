@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -139,8 +138,7 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
-// extractHandler runs extraction for a message. Until results are stored
-// (issue #8), the JSON is logged.
+// extractHandler runs extraction for a message and stores the result.
 func extractHandler(st *store.Store, ex *extract.Extractor, log *slog.Logger) worker.Handler {
 	return func(ctx context.Context, job store.Job) error {
 		in, err := st.ExtractInput(ctx, job.MessageID)
@@ -159,7 +157,10 @@ func extractHandler(st *store.Store, ex *extract.Extractor, log *slog.Logger) wo
 		if err != nil {
 			return err
 		}
-		log.Info("extracted", "message_id", job.MessageID, "inbox", in.InboxSlug, "json", json.RawMessage(out))
+		if err := st.SaveExtraction(ctx, job.MessageID, out.Model, out.JSON); err != nil {
+			return fmt.Errorf("save extraction: %w", err)
+		}
+		log.Info("extracted", "message_id", job.MessageID, "inbox", in.InboxSlug, "model", out.Model)
 		return nil
 	}
 }

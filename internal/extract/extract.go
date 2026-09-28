@@ -21,6 +21,13 @@ const DefaultModel = "claude-opus-5"
 // request was rejected, the model refused, or the output didn't fit.
 var ErrUnextractable = errors.New("email can't be extracted")
 
+// Result is the extracted JSON and the model that produced it, which can
+// differ from the configured one when a refusal fallback answered.
+type Result struct {
+	JSON  json.RawMessage
+	Model string
+}
+
 // Email is what the model sees of a message.
 type Email struct {
 	From     string
@@ -51,10 +58,10 @@ Use only what the email states. When a value isn't in the email, use null where 
 
 // Extract returns JSON for email that matches schema. Errors wrapping
 // ErrUnextractable won't go away on retry; any other error might.
-func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email Email) (json.RawMessage, error) {
+func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email Email) (Result, error) {
 	wire, err := wireSchema(schema)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnextractable, err)
+		return Result{}, fmt.Errorf("%w: %v", ErrUnextractable, err)
 	}
 
 	resp, err := e.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
@@ -75,16 +82,16 @@ func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email E
 	if err != nil {
 		var apierr *anthropic.Error
 		if errors.As(err, &apierr) && isRequestError(apierr.StatusCode) {
-			return nil, fmt.Errorf("%w: %v", ErrUnextractable, err)
+			return Result{}, fmt.Errorf("%w: %v", ErrUnextractable, err)
 		}
-		return nil, err // rate limits, overload, server and network errors
+		return Result{}, err // rate limits, overload, server and network errors
 	}
 
 	switch resp.StopReason {
 	case anthropic.BetaStopReasonRefusal:
-		return nil, fmt.Errorf("%w: model refused (%s)", ErrUnextractable, resp.StopDetails.Category)
+		return Result{}, fmt.Errorf("%w: model refused (%s)", ErrUnextractable, resp.StopDetails.Category)
 	case anthropic.BetaStopReasonMaxTokens:
-		return nil, fmt.Errorf("%w: output exceeded %d tokens", ErrUnextractable, 16000)
+		return Result{}, fmt.Errorf("%w: output exceeded %d tokens", ErrUnextractable, 16000)
 	}
 
 	var text strings.Builder
@@ -95,9 +102,9 @@ func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email E
 	}
 	out := json.RawMessage(text.String())
 	if !json.Valid(out) {
-		return nil, fmt.Errorf("model returned invalid JSON (stop reason %q)", resp.StopReason)
+		return Result{}, fmt.Errorf("model returned invalid JSON (stop reason %q)", resp.StopReason)
 	}
-	return out, nil
+	return Result{JSON: out, Model: string(resp.Model)}, nil
 }
 
 // isRequestError reports whether a status means the request itself is wrong,

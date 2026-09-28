@@ -93,6 +93,17 @@ func (s *Store) ExtractInput(ctx context.Context, messageID int64) (in ExtractIn
 	return in, err
 }
 
+// SaveExtraction stores the JSON extracted from a message, replacing any
+// earlier result.
+func (s *Store) SaveExtraction(ctx context.Context, messageID int64, model string, data json.RawMessage) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO extractions (message_id, model, data) VALUES ($1, $2, $3)
+		ON CONFLICT (message_id) DO UPDATE
+		SET model = EXCLUDED.model, data = EXCLUDED.data, created_at = now()`,
+		messageID, model, data)
+	return err
+}
+
 // Job is a claimed unit of work. Attempts counts this run.
 type Job struct {
 	ID        int64

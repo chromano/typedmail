@@ -66,8 +66,8 @@ func TestExtractSendsSchemaAndEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != `{"po_number": "10442", "total": "412.50"}` {
-		t.Errorf("result = %s", got)
+	if string(got.JSON) != `{"po_number": "10442", "total": "412.50"}` || got.Model != "claude-opus-5" {
+		t.Errorf("result = %s from %s", got.JSON, got.Model)
 	}
 
 	if api.req["model"] != DefaultModel {
@@ -161,10 +161,10 @@ func TestLive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("%s", out)
+			t.Logf("%s: %s", out.Model, out.JSON)
 
 			var got map[string]any
-			if err := json.Unmarshal(out, &got); err != nil {
+			if err := json.Unmarshal(out.JSON, &got); err != nil {
 				t.Fatal(err)
 			}
 			var s struct{ Required []string }

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -32,7 +33,7 @@ func newTestStore(t *testing.T) (*Store, *pgxpool.Pool) {
 	if err := Migrate(ctx, pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, "TRUNCATE jobs, messages, inboxes RESTART IDENTITY"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE extractions, jobs, messages, inboxes RESTART IDENTITY"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO inboxes (slug) VALUES ('orders')"); err != nil {
@@ -311,5 +312,33 @@ func TestExtractInput(t *testing.T) {
 	if in.InboxSlug != "orders" || string(in.Schema) != `{"type": "object"}` ||
 		in.FromAddress != msg.FromAddress || in.Subject != msg.Subject || in.TextBody != msg.TextBody {
 		t.Errorf("input = %+v", in)
+	}
+}
+
+func TestSaveExtractionReplacesEarlierResult(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+	id, _, err := s.SaveInbound(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SaveExtraction(ctx, id, "claude-opus-5", json.RawMessage(`{"po_number": "1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveExtraction(ctx, id, "claude-opus-4-8", json.RawMessage(`{"po_number": "2"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	var model, po string
+	err = pool.QueryRow(ctx, "SELECT model, data->>'po_number' FROM extractions WHERE message_id = $1", id).Scan(&model, &po)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "claude-opus-4-8" || po != "2" {
+		t.Errorf("extraction = (%s, %s), want the second result", model, po)
+	}
+	if n := count(t, pool, "extractions"); n != 1 {
+		t.Errorf("extractions = %d, want 1", n)
 	}
 }
