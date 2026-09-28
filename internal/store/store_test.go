@@ -51,7 +51,11 @@ func count(t *testing.T, pool *pgxpool.Pool, table string) int {
 	return n
 }
 
+var extractOnly = []string{JobExtract}
+
 var msg = InboundMessage{
+	Provider:    ProviderPostmark,
+	ProviderID:  "73e6d360-66eb-11e1-8e72-a8904824019b",
 	InboxSlug:   "orders",
 	MessageID:   "<po10442@mail.acme-retail.com>",
 	FromAddress: "buyer@acme-retail.com",
@@ -160,7 +164,7 @@ func TestClaimJob(t *testing.T) {
 	ctx := context.Background()
 	saveJobs(t, s, 1)
 
-	job, ok, err := s.ClaimJob(ctx, time.Hour)
+	job, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
@@ -171,7 +175,7 @@ func TestClaimJob(t *testing.T) {
 		t.Errorf("row = %+v, want running with 1 attempt", r)
 	}
 
-	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
+	if _, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour); err != nil || ok {
 		t.Errorf("second claim: ok=%v err=%v, want no job", ok, err)
 	}
 }
@@ -182,7 +186,7 @@ func TestClaimJobSkipsJobsNotYetDue(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), "UPDATE jobs SET run_at = now() + interval '1 hour'"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.ClaimJob(context.Background(), time.Hour); err != nil || ok {
+	if _, ok, err := s.ClaimJob(context.Background(), extractOnly, time.Hour); err != nil || ok {
 		t.Errorf("claim: ok=%v err=%v, want no job", ok, err)
 	}
 }
@@ -200,7 +204,7 @@ func TestClaimJobInParallelTakesEachJobOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for {
-				job, ok, err := s.ClaimJob(context.Background(), time.Hour)
+				job, ok, err := s.ClaimJob(context.Background(), extractOnly, time.Hour)
 				if err != nil {
 					t.Error(err)
 					return
@@ -233,7 +237,7 @@ func TestJobOutcomes(t *testing.T) {
 
 	var ids []int64
 	for range 3 {
-		job, ok, err := s.ClaimJob(ctx, time.Hour)
+		job, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour)
 		if err != nil || !ok {
 			t.Fatalf("claim: ok=%v err=%v", ok, err)
 		}
@@ -261,7 +265,7 @@ func TestJobOutcomes(t *testing.T) {
 	}
 
 	// The retried job isn't due for an hour, so nothing can be claimed.
-	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
+	if _, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour); err != nil || ok {
 		t.Errorf("claim: ok=%v err=%v, want no job", ok, err)
 	}
 }
@@ -271,13 +275,13 @@ func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
 	ctx := context.Background()
 	saveJobs(t, s, 1)
 
-	first, ok, err := s.ClaimJob(ctx, time.Hour)
+	first, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
 	// Running for less than staleAfter: the worker may still be on it.
-	if _, ok, err := s.ClaimJob(ctx, time.Hour); err != nil || ok {
+	if _, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour); err != nil || ok {
 		t.Fatalf("claim of a live job: ok=%v err=%v, want no job", ok, err)
 	}
 
@@ -285,7 +289,7 @@ func TestClaimJobReclaimsStaleRunningJobs(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE jobs SET updated_at = now() - interval '2 hours'"); err != nil {
 		t.Fatal(err)
 	}
-	second, ok, err := s.ClaimJob(ctx, time.Hour)
+	second, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim of a stale job: ok=%v err=%v", ok, err)
 	}
@@ -340,5 +344,46 @@ func TestSaveExtractionReplacesEarlierResult(t *testing.T) {
 	}
 	if n := count(t, pool, "extractions"); n != 1 {
 		t.Errorf("extractions = %d, want 1", n)
+	}
+}
+
+func TestResendMessageStartsWithFetch(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+
+	m := msg
+	m.Provider, m.ProviderID, m.MessageID = ProviderResend, "email-1", "<resend@example.com>"
+	m.TextBody = ""
+	id, _, err := s.SaveInbound(ctx, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An extract-only worker can't take it; a fetch worker can.
+	if _, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour); err != nil || ok {
+		t.Fatalf("extract claim: ok=%v err=%v, want no job", ok, err)
+	}
+	job, ok, err := s.ClaimJob(ctx, []string{JobFetch}, time.Hour)
+	if err != nil || !ok || job.Kind != JobFetch || job.MessageID != id {
+		t.Fatalf("fetch claim = %+v ok=%v err=%v", job, ok, err)
+	}
+	if pid, err := s.ProviderID(ctx, id); err != nil || pid != "email-1" {
+		t.Errorf("provider ID = %q, %v", pid, err)
+	}
+
+	if err := s.SaveBody(ctx, id, "Please ship", "<p>Please ship</p>"); err != nil {
+		t.Fatal(err)
+	}
+	in, err := s.ExtractInput(ctx, id)
+	if err != nil || in.TextBody != "Please ship" || in.HTMLBody != "<p>Please ship</p>" {
+		t.Errorf("input = %+v, %v", in, err)
+	}
+	next, ok, err := s.ClaimJob(ctx, extractOnly, time.Hour)
+	if err != nil || !ok || next.MessageID != id {
+		t.Errorf("extract claim after fetch = %+v ok=%v err=%v", next, ok, err)
+	}
+	var provider string
+	if err := pool.QueryRow(ctx, "SELECT provider FROM messages WHERE id = $1", id).Scan(&provider); err != nil || provider != ProviderResend {
+		t.Errorf("provider = %q, %v", provider, err)
 	}
 }

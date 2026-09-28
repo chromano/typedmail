@@ -15,6 +15,7 @@ import (
 
 	"github.com/chromano/typedmail/internal/extract"
 	"github.com/chromano/typedmail/internal/ingest"
+	"github.com/chromano/typedmail/internal/resend"
 	"github.com/chromano/typedmail/internal/store"
 	"github.com/chromano/typedmail/internal/worker"
 	"github.com/chromano/typedmail/migrations"
@@ -50,6 +51,13 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("POST /webhooks/postmark", ingest.NewHandler(st, cfg.inboundUser, cfg.inboundPassword, log))
+	if cfg.resendWebhookSecret != "" {
+		rh, err := ingest.NewResendHandler(st, cfg.resendWebhookSecret, log)
+		if err != nil {
+			return fmt.Errorf("RESEND_WEBHOOK_SECRET: %w", err)
+		}
+		mux.Handle("POST /webhooks/resend", rh)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := st.Ping(r.Context()); err != nil {
 			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
@@ -64,17 +72,29 @@ func run(log *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Each job kind runs only when its API key is set; jobs of other kinds
+	// stay queued until one is configured.
+	handlers := map[string]worker.Handler{}
+	if cfg.anthropicAPIKey != "" {
+		handlers[store.JobExtract] = extractHandler(st, extract.New(cfg.extractModel), log)
+	} else {
+		log.Warn("ANTHROPIC_API_KEY not set; extraction is disabled and extract jobs stay queued")
+	}
+	if cfg.resendAPIKey != "" {
+		rc := resend.New(cfg.resendAPIKey)
+		if u := os.Getenv("RESEND_BASE_URL"); u != "" {
+			rc.WithBaseURL(u) // e.g. a local fake, like ANTHROPIC_BASE_URL
+		}
+		handlers[store.JobFetch] = fetchHandler(st, rc)
+	} else if cfg.resendWebhookSecret != "" {
+		log.Warn("RESEND_API_KEY not set; Resend messages are stored but their bodies aren't fetched")
+	}
+
 	workerDone := make(chan struct{})
-	if cfg.anthropicAPIKey == "" {
-		// Without a key every extraction would fail; leave jobs queued until
-		// one is configured.
-		log.Warn("ANTHROPIC_API_KEY not set; extraction is disabled and jobs stay queued")
+	if len(handlers) == 0 {
 		close(workerDone)
 	} else {
-		ex := extract.New(cfg.extractModel)
-		wrk := worker.New(st, map[string]worker.Handler{
-			store.JobExtract: extractHandler(st, ex, log),
-		}, worker.Config{}, log)
+		wrk := worker.New(st, handlers, worker.Config{}, log)
 		go func() {
 			defer close(workerDone)
 			wrk.Run(ctx)
@@ -111,6 +131,9 @@ type config struct {
 	inboundPassword string
 	anthropicAPIKey string
 	extractModel    string
+
+	resendWebhookSecret string
+	resendAPIKey        string
 }
 
 func loadConfig() (config, error) {
@@ -121,6 +144,9 @@ func loadConfig() (config, error) {
 		inboundPassword: os.Getenv("INBOUND_PASSWORD"),
 		anthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 		extractModel:    getenv("EXTRACT_MODEL", extract.DefaultModel),
+
+		resendWebhookSecret: os.Getenv("RESEND_WEBHOOK_SECRET"),
+		resendAPIKey:        os.Getenv("RESEND_API_KEY"),
 	}
 	if cfg.databaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -161,6 +187,29 @@ func extractHandler(st *store.Store, ex *extract.Extractor, log *slog.Logger) wo
 			return fmt.Errorf("save extraction: %w", err)
 		}
 		log.Info("extracted", "message_id", job.MessageID, "inbox", in.InboxSlug, "model", out.Model)
+		return nil
+	}
+}
+
+// fetchHandler gets a Resend message's body, which the webhook omits, then
+// stores it and queues extraction.
+func fetchHandler(st *store.Store, rc *resend.Client) worker.Handler {
+	return func(ctx context.Context, job store.Job) error {
+		emailID, err := st.ProviderID(ctx, job.MessageID)
+		if err != nil {
+			return fmt.Errorf("load message: %w", err)
+		}
+		body, err := rc.ReceivedEmail(ctx, emailID)
+		var se *resend.StatusError
+		if errors.As(err, &se) && se.Permanent() {
+			return worker.Permanent(err)
+		}
+		if err != nil {
+			return err
+		}
+		if err := st.SaveBody(ctx, job.MessageID, body.Text, body.HTML); err != nil {
+			return fmt.Errorf("save body: %w", err)
+		}
 		return nil
 	}
 }

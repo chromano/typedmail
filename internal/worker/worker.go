@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -15,7 +17,7 @@ import (
 
 // Queue is the part of the store the worker needs.
 type Queue interface {
-	ClaimJob(ctx context.Context, staleAfter time.Duration) (store.Job, bool, error)
+	ClaimJob(ctx context.Context, kinds []string, staleAfter time.Duration) (store.Job, bool, error)
 	CompleteJob(ctx context.Context, id int64) error
 	RetryJob(ctx context.Context, id int64, lastError string, delay time.Duration) error
 	FailJob(ctx context.Context, id int64, lastError string) error
@@ -48,6 +50,7 @@ type Config struct {
 type Worker struct {
 	queue    Queue
 	handlers map[string]Handler
+	kinds    []string // the job kinds with a handler; others stay queued
 	cfg      Config
 	log      *slog.Logger
 }
@@ -71,7 +74,8 @@ func New(queue Queue, handlers map[string]Handler, cfg Config, log *slog.Logger)
 	if cfg.MaxBackoff <= 0 {
 		cfg.MaxBackoff = 2 * time.Hour
 	}
-	return &Worker{queue: queue, handlers: handlers, cfg: cfg, log: log}
+	kinds := slices.Sorted(maps.Keys(handlers))
+	return &Worker{queue: queue, handlers: handlers, kinds: kinds, cfg: cfg, log: log}
 }
 
 // Run processes jobs until ctx is cancelled. It then stops claiming new jobs,
@@ -91,7 +95,7 @@ func (w *Worker) Run(ctx context.Context) {
 
 func (w *Worker) loop(ctx context.Context) {
 	for ctx.Err() == nil {
-		job, ok, err := w.queue.ClaimJob(ctx, w.staleAfter())
+		job, ok, err := w.queue.ClaimJob(ctx, w.kinds, w.staleAfter())
 		if err != nil && ctx.Err() == nil {
 			w.log.Error("claim job", "err", err)
 		}

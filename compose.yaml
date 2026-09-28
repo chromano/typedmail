@@ -26,6 +26,10 @@ services:
       # From your shell or .env; extraction is disabled when unset.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EXTRACT_MODEL: ${EXTRACT_MODEL:-}
+      # Resend inbound (optional): the webhook's signing secret, and an API key
+      # to fetch bodies. Without the secret, POST /webhooks/resend doesn't exist.
+      RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
     ports:
       - "8080:8080"
     depends_on:

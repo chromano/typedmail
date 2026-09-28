@@ -82,21 +82,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, created, err := h.saver.SaveInbound(r.Context(), msg)
+	save(w, r, h.saver, h.log, msg)
+}
+
+// save stores a mapped message and answers the provider: accepted, duplicate,
+// or dropped for an unknown inbox. Shared by every provider's handler.
+func save(w http.ResponseWriter, r *http.Request, saver Saver, log *slog.Logger, msg store.InboundMessage) {
+	log = log.With("provider", msg.Provider, "inbox", msg.InboxSlug, "message_id", msg.MessageID)
+	id, created, err := saver.SaveInbound(r.Context(), msg)
 	switch {
 	case errors.Is(err, store.ErrUnknownInbox):
 		// Answer 200 anyway: redelivery can't fix an unknown address, and a
 		// non-2xx would only make the provider retry it.
-		h.log.Warn("dropped message for unknown inbox", "inbox", msg.InboxSlug, "message_id", msg.MessageID)
+		log.Warn("dropped message for unknown inbox")
 		writeJSON(w, map[string]any{"status": "dropped"})
 	case err != nil:
-		h.log.Error("save inbound message", "err", err, "message_id", msg.MessageID)
+		log.Error("save inbound message", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	case !created:
-		h.log.Info("duplicate message ignored", "inbox", msg.InboxSlug, "message_id", msg.MessageID)
+		log.Info("duplicate message ignored")
 		writeJSON(w, map[string]any{"status": "duplicate"})
 	default:
-		h.log.Info("message accepted", "id", id, "inbox", msg.InboxSlug, "message_id", msg.MessageID)
+		log.Info("message accepted", "id", id)
 		writeJSON(w, map[string]any{"status": "accepted", "id": id})
 	}
 }
@@ -121,6 +128,8 @@ func toInboundMessage(p postmarkInbound, raw []byte) (store.InboundMessage, erro
 		return store.InboundMessage{}, errors.New("missing Message-ID")
 	}
 	return store.InboundMessage{
+		Provider:    store.ProviderPostmark,
+		ProviderID:  p.MessageID,
 		InboxSlug:   slug,
 		MessageID:   id,
 		FromAddress: p.From,

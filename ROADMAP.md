@@ -13,6 +13,8 @@ Each unchecked item is meant to become one GitHub issue.
 - [x] Answer 403 for payloads that can never be accepted, so Postmark stops
   retrying them (#2)
 - [x] Strip NUL bytes from inbound payloads, which Postgres rejects (#3)
+- [x] Resend inbound alongside Postmark: Svix-signed webhook, a `fetch` job
+  for the body, dedupe across providers on the sender's Message-ID (#12)
 
 ## Worker
 
@@ -57,14 +59,6 @@ Not needed to prove "email in, JSON out". Revisit once there is a first user.
 - API to create and update inboxes, replacing `make seed`
 - Extract from attachments (PDF, images), not just the body
 - Keep the history of extraction results
-- Support Resend inbound (`POST /webhooks/resend`): verify the Svix
-  signature, store the `email.received` metadata, and fetch body and headers
-  from the Received Emails API in a `fetch` job before `extract` (the webhook
-  carries metadata only). Share the accepted/duplicate/dropped handling with
-  the Postmark handler and add a `provider` column to `messages`. Prefix
-  Resend's ID with `resend:` when there is no Message-ID; if the webhook
-  metadata doesn't carry the Message-ID, the same email arriving through both
-  providers won't be deduplicated
 - `make test-docker`: run the test suite in a Go container so the host
   doesn't need Go
 - Deploy to Cloud Run with managed Postgres

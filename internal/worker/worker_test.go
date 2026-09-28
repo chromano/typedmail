@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -19,15 +20,17 @@ type fakeQueue struct {
 	completed []int64
 	failed    map[int64]string
 	retried   map[int64]time.Duration
+	kinds     []string // what the worker last asked to claim
 }
 
 func newFakeQueue(jobs ...store.Job) *fakeQueue {
 	return &fakeQueue{jobs: jobs, failed: map[int64]string{}, retried: map[int64]time.Duration{}}
 }
 
-func (q *fakeQueue) ClaimJob(context.Context, time.Duration) (store.Job, bool, error) {
+func (q *fakeQueue) ClaimJob(_ context.Context, kinds []string, _ time.Duration) (store.Job, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.kinds = kinds
 	if len(q.jobs) == 0 {
 		return store.Job{}, false, nil
 	}
@@ -199,5 +202,29 @@ func TestJobTimeout(t *testing.T) {
 
 	if _, ok := q.retried[1]; !ok {
 		t.Errorf("retried = %v, want the timed-out job retried", q.retried)
+	}
+}
+
+func TestWorkerClaimsOnlyKindsItCanRun(t *testing.T) {
+	q := newFakeQueue()
+	w := New(q, map[string]Handler{
+		"fetch":   func(context.Context, store.Job) error { return nil },
+		"extract": func(context.Context, store.Job) error { return nil },
+	}, Config{PollInterval: time.Millisecond}, discard)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Run(ctx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !slices.Equal(q.kinds, []string{"extract", "fetch"}) {
+		t.Errorf("claimed kinds = %v, want [extract fetch]", q.kinds)
 	}
 }

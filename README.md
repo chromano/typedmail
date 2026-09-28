@@ -8,11 +8,15 @@ Anything the system isn't sure about goes to a person to check before it's used.
 ## How it works
 
 ```
-Postmark inbound ──webhook──▶ POST /webhooks/postmark
-                                 │  basic auth, 35 MB limit
+Postmark ──webhook──▶ POST /webhooks/postmark   (basic auth)
+Resend   ──webhook──▶ POST /webhooks/resend     (Svix signature)
                                  │  dedupe on the sender's Message-ID
                                  ▼
                     Postgres: messages + jobs (one transaction)
+                                 │
+                                 ▼
+                    Resend only: a fetch job gets the body,
+                    which its webhook omits
                                  │
                                  ▼
                     worker claims the extract job
@@ -29,13 +33,14 @@ Postmark inbound ──webhook──▶ POST /webhooks/postmark
              human review ──approved──▶ deliver JSON to the customer
 ```
 
-- **Fast acknowledgement.** The webhook only stores the message and enqueues an
-  `extract` job. Nothing slow happens while the provider waits.
+- **Fast acknowledgement.** The webhook only stores the message and enqueues its
+  first job. Nothing slow happens while the provider waits.
 - **No duplicates.** Messages are unique per inbox on the RFC 5322 `Message-ID`
-  header (falling back to Postmark's ID), so provider retries and sender resends
-  are stored once.
-- **Inbox routing.** `<hash>+orders@inbound.postmarkapp.com` routes to the
-  `orders` inbox. With a custom inbound domain, `orders@mail.example.com` does too.
+  header (falling back to the provider's own ID), so provider retries, sender
+  resends, and the same email arriving through both providers are stored once.
+- **Inbox routing.** `<hash>+orders@inbound.postmarkapp.com` and
+  `orders@<id>.resend.app` route to the `orders` inbox. With a custom inbound
+  domain, `orders@mail.example.com` does too.
 - **One schema per inbox.** Each inbox defines the JSON it produces as a JSON
   Schema, so `orders` and `invoices` can return different shapes.
 - **Background work.** Workers claim jobs with `FOR UPDATE SKIP LOCKED`, so
@@ -142,3 +147,52 @@ name after a `+`:
 
 If the app is down when email arrives, Postmark retries the webhook for
 about 10 hours, so messages arrive once it's back up.
+
+## Receiving real email with Resend and ngrok
+
+Resend's webhook carries only the email's metadata, so the app also needs an
+API key to fetch the body. It works alongside Postmark: the same email arriving
+through both is stored once.
+
+**1. Configure Resend** in its dashboard:
+
+- **Receiving:** note your receiving domain, `<id>.resend.app`, or add a
+  custom domain.
+- **Webhooks:** add an endpoint at `https://<forwarding-host>/webhooks/resend`
+  (the ngrok URL from step 2 below) for the `email.received` event, and copy its
+  signing secret, `whsec_…`.
+- **API keys:** create a key the app can use to read received emails, `re_…`.
+
+**2. Start the app with both** and expose it:
+
+```sh
+export RESEND_WEBHOOK_SECRET=whsec_…
+export RESEND_API_KEY=re_…
+make up && make seed
+ngrok http 8080
+```
+
+They can also go in `.env`. Set `ANTHROPIC_API_KEY` too, or messages are
+fetched but not extracted.
+
+**3. Send an email** to the inbox you want, by its name before the `@`:
+
+```
+orders@<id>.resend.app
+invoices@<id>.resend.app
+shipments@<id>.resend.app
+```
+
+The app log shows `message accepted` with `"provider":"resend"`, then a `fetch`
+job, then `extracted`; `make results` shows the result.
+
+### When it doesn't work
+
+| What you see | Why |
+|---|---|
+| `404` from `/webhooks/resend` | `RESEND_WEBHOOK_SECRET` isn't set, so the endpoint doesn't exist. Run `make up` after setting it. |
+| `401 invalid signature` | The secret doesn't match the endpoint's signing secret in Resend, or the request is more than 5 minutes old (Resend replaying an old delivery, or your clock is off). |
+| `{"status":"ignored"}` | The webhook sent an event other than `email.received`; it's safe to leave other events on. |
+| `{"status":"dropped"}` | No inbox with the name before the `@`; check `make seed` ran. |
+| Job `fetch` stays `queued` | `RESEND_API_KEY` isn't set; the log says so at startup. |
+| Job `fetch` `failed` | Resend doesn't know the email (404), or keeps rejecting the key; `docker compose logs app \| grep 'job failed'` shows which. |
