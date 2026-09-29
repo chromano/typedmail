@@ -46,7 +46,7 @@ requeue:  ## requeue failed jobs with a fresh set of attempts (JOB=<id> for one)
 	docker compose exec -T db psql -U typedmail -q -At -v ON_ERROR_STOP=1 -v job="$(JOB)"
 
 results:  ## show the latest extractions next to their emails
-	@docker compose exec -T db psql -U typedmail -c \
-		"SELECT m.id, i.slug AS inbox, m.from_address, m.subject, j.status, e.model, jsonb_pretty(e.data) AS extracted \
-		FROM messages m JOIN inboxes i ON i.id = m.inbox_id JOIN jobs j ON j.message_id = m.id \
+	@docker compose exec -T db psql -U typedmail -P expanded=on -c \
+		"SELECT m.id, i.slug AS inbox, m.from_address, m.subject, j.status, e.model, e.valid, e.validation_errors, jsonb_pretty(e.data) AS extracted \
+		FROM messages m JOIN inboxes i ON i.id = m.inbox_id JOIN LATERAL (SELECT status FROM jobs WHERE message_id = m.id ORDER BY id DESC LIMIT 1) j ON true \
 		LEFT JOIN extractions e ON e.message_id = m.id ORDER BY m.id DESC LIMIT 5"
