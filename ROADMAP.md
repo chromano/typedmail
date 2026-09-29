@@ -37,7 +37,10 @@ Each unchecked item is meant to become one GitHub issue.
 - [ ] Make the model answer every field: mark all properties required in the
   schema sent to the API, with optional ones nullable. Today it leaves out
   optional fields the email does state (a shipment's items and delivery
-  date), and once corrupted a value (`tracking_url`)
+  date), and once corrupted a value (`tracking_url`) (#9)
+- [ ] Validate every extraction against the full inbox schema, which enforces
+  the constraints the API can't (`pattern`, `minimum`, `format`), and record
+  failures (#9)
 
 ## Docs
 
@@ -47,9 +50,6 @@ Each unchecked item is meant to become one GitHub issue.
 
 Not needed to prove "email in, JSON out". Revisit once there is a first user.
 
-- Validate every extraction against the full inbox schema, which enforces the
-  constraints the API can't (`pattern`, `minimum`, `format`), and record
-  failures (#9)
 - CI: vet and tests (with Postgres) on every push (#10)
 - Flag fields the system is unsure about and route the message to review
 - Review UI: list messages waiting for review; show the email next to the
