@@ -131,13 +131,18 @@ func (s *Store) ExtractInput(ctx context.Context, messageID int64) (in ExtractIn
 }
 
 // SaveExtraction stores the JSON extracted from a message, replacing any
-// earlier result.
-func (s *Store) SaveExtraction(ctx context.Context, messageID int64, model string, data json.RawMessage) error {
+// earlier result. validationErrors lists where data breaks the inbox schema;
+// none means it is valid.
+func (s *Store) SaveExtraction(ctx context.Context, messageID int64, model string, data json.RawMessage, validationErrors []string) error {
+	if len(validationErrors) == 0 {
+		validationErrors = nil // stored as NULL
+	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO extractions (message_id, model, data) VALUES ($1, $2, $3)
+		INSERT INTO extractions (message_id, model, data, valid, validation_errors) VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (message_id) DO UPDATE
-		SET model = EXCLUDED.model, data = EXCLUDED.data, created_at = now()`,
-		messageID, model, data)
+		SET model = EXCLUDED.model, data = EXCLUDED.data, valid = EXCLUDED.valid,
+			validation_errors = EXCLUDED.validation_errors, created_at = now()`,
+		messageID, model, data, validationErrors == nil, validationErrors)
 	return err
 }
 

@@ -3,21 +3,20 @@ package extract
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
 
-// Structured outputs accept a subset of JSON Schema. wireSchema rewrites an
-// inbox schema into that subset:
-//
-//   - type lists such as ["string", "null"] become anyOf
-//   - constraints the API can't enforce (pattern, minimum, maxItems, ...) are
-//     removed and described in the field's description instead, so the model
-//     still sees them; validation against the full schema enforces them
-//   - objects get additionalProperties: false, which the API requires
+// completeSchema returns the inbox schema with every property of every object
+// required, and the ones the inbox schema leaves optional made nullable. The
+// model then answers each field, with null when the email doesn't state it,
+// instead of leaving fields out. Both the wire schema and validation start
+// from it, so the model is asked for exactly what is checked.
 //
 // The stored schema is left untouched.
-func wireSchema(schema json.RawMessage) (map[string]any, error) {
+func completeSchema(schema json.RawMessage) (map[string]any, error) {
 	var root any
 	if err := json.Unmarshal(schema, &root); err != nil {
 		return nil, fmt.Errorf("parse inbox schema: %w", err)
@@ -25,6 +24,132 @@ func wireSchema(schema json.RawMessage) (map[string]any, error) {
 	m, ok := root.(map[string]any)
 	if !ok || m["type"] != "object" {
 		return nil, fmt.Errorf("inbox schema must be a JSON Schema of type object")
+	}
+	complete(m, m)
+	return m, nil
+}
+
+func complete(node any, root map[string]any) {
+	switch n := node.(type) {
+	case []any:
+		for _, s := range n {
+			complete(s, root)
+		}
+	case map[string]any:
+		if props, ok := n["properties"].(map[string]any); ok {
+			required, _ := n["required"].([]any)
+			names := make([]any, 0, len(props))
+			for _, name := range slices.Sorted(maps.Keys(props)) {
+				if !slices.Contains(required, any(name)) {
+					props[name] = nullable(props[name], root)
+				}
+				names = append(names, name)
+			}
+			n["required"] = names
+		}
+		for _, k := range []string{"properties", "$defs", "definitions"} {
+			if sub, ok := n[k].(map[string]any); ok {
+				for _, s := range sub {
+					complete(s, root)
+				}
+			}
+		}
+		for _, k := range []string{"items", "prefixItems", "anyOf", "oneOf", "allOf", "not"} {
+			complete(n[k], root)
+		}
+	}
+}
+
+// nullable returns schema s changed to also accept null.
+func nullable(s any, root map[string]any) any {
+	n, ok := s.(map[string]any)
+	if !ok || allowsNull(n, root, 0) {
+		return s
+	}
+	if _, hasConst := n["const"]; !hasConst {
+		switch t := n["type"].(type) {
+		case string:
+			n["type"] = []any{t, "null"}
+			addNullToEnum(n)
+			return n
+		case []any:
+			n["type"] = append(t, "null")
+			addNullToEnum(n)
+			return n
+		}
+	}
+	return map[string]any{"anyOf": []any{n, map[string]any{"type": "null"}}}
+}
+
+func addNullToEnum(n map[string]any) {
+	if enum, ok := n["enum"].([]any); ok && !slices.Contains(enum, nil) {
+		n["enum"] = append(enum, nil)
+	}
+}
+
+// allowsNull reports whether schema n already accepts null. It follows local
+// $refs, up to a depth that stops reference cycles.
+func allowsNull(n map[string]any, root map[string]any, depth int) bool {
+	if depth > 16 {
+		return false
+	}
+	if ref, ok := n["$ref"].(string); ok {
+		target, ok := resolve(ref, root)
+		return ok && allowsNull(target, root, depth+1)
+	}
+	for _, k := range []string{"anyOf", "oneOf"} {
+		if branches, ok := n[k].([]any); ok {
+			return slices.ContainsFunc(branches, func(b any) bool {
+				m, ok := b.(map[string]any)
+				return ok && allowsNull(m, root, depth+1)
+			})
+		}
+	}
+	switch t := n["type"].(type) {
+	case string:
+		if t != "null" {
+			return false
+		}
+	case []any:
+		if !slices.Contains(t, any("null")) {
+			return false
+		}
+	default:
+		return false
+	}
+	if enum, ok := n["enum"].([]any); ok && !slices.Contains(enum, nil) {
+		return false
+	}
+	if c, ok := n["const"]; ok && c != nil {
+		return false
+	}
+	return true
+}
+
+// resolve finds a local reference such as "#/$defs/amount" in root.
+func resolve(ref string, root map[string]any) (map[string]any, bool) {
+	for _, k := range []string{"$defs", "definitions"} {
+		if name, ok := strings.CutPrefix(ref, "#/"+k+"/"); ok {
+			defs, _ := root[k].(map[string]any)
+			target, ok := defs[name].(map[string]any)
+			return target, ok
+		}
+	}
+	return nil, false
+}
+
+// Structured outputs accept a subset of JSON Schema. wireSchema rewrites the
+// complete schema (see completeSchema) into that subset:
+//
+//   - type lists such as ["string", "null"] become anyOf
+//   - constraints the API can't enforce (pattern, minimum, maxItems, ...) are
+//     removed and described in the field's description instead, so the model
+//     still sees them; validation against the full schema enforces them
+//   - objects get additionalProperties: false, which the API requires
+func wireSchema(schema json.RawMessage) (map[string]any, error) {
+	m, err := completeSchema(schema)
+	if err != nil {
+		return nil, err
 	}
 	return rewrite(m).(map[string]any), nil
 }

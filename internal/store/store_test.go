@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -327,10 +328,10 @@ func TestSaveExtractionReplacesEarlierResult(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.SaveExtraction(ctx, id, "claude-opus-5", json.RawMessage(`{"po_number": "1"}`)); err != nil {
+	if err := s.SaveExtraction(ctx, id, "claude-opus-5", json.RawMessage(`{"po_number": "1"}`), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveExtraction(ctx, id, "claude-opus-4-8", json.RawMessage(`{"po_number": "2"}`)); err != nil {
+	if err := s.SaveExtraction(ctx, id, "claude-opus-4-8", json.RawMessage(`{"po_number": "2"}`), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -345,6 +346,40 @@ func TestSaveExtractionReplacesEarlierResult(t *testing.T) {
 	if n := count(t, pool, "extractions"); n != 1 {
 		t.Errorf("extractions = %d, want 1", n)
 	}
+}
+
+func TestSaveExtractionRecordsValidation(t *testing.T) {
+	s, pool := newTestStore(t)
+	ctx := context.Background()
+	id, _, err := s.SaveInbound(ctx, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(wantValid bool, wantErrors []string) {
+		t.Helper()
+		var valid bool
+		var errs []string
+		err := pool.QueryRow(ctx,
+			"SELECT valid, validation_errors FROM extractions WHERE message_id = $1", id).Scan(&valid, &errs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if valid != wantValid || !slices.Equal(errs, wantErrors) {
+			t.Errorf("validation = (%v, %q), want (%v, %q)", valid, errs, wantValid, wantErrors)
+		}
+	}
+
+	problems := []string{"/po_number: got number, want string"}
+	if err := s.SaveExtraction(ctx, id, "claude-opus-5", json.RawMessage(`{"po_number": 1}`), problems); err != nil {
+		t.Fatal(err)
+	}
+	check(false, problems)
+
+	// A valid result replacing an invalid one clears its errors.
+	if err := s.SaveExtraction(ctx, id, "claude-opus-5", json.RawMessage(`{"po_number": "1"}`), []string{}); err != nil {
+		t.Fatal(err)
+	}
+	check(true, nil)
 }
 
 func TestResendMessageStartsWithFetch(t *testing.T) {

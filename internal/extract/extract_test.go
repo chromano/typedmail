@@ -66,8 +66,9 @@ func TestExtractSendsSchemaAndEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got.JSON) != `{"po_number": "10442", "total": "412.50"}` || got.Model != "claude-opus-5" {
-		t.Errorf("result = %s from %s", got.JSON, got.Model)
+	if string(got.JSON) != `{"po_number": "10442", "total": "412.50"}` || got.Model != "claude-opus-5" ||
+		got.ValidationErrors != nil {
+		t.Errorf("result = %s from %s, validation errors %q", got.JSON, got.Model, got.ValidationErrors)
 	}
 
 	if api.req["model"] != DefaultModel {
@@ -90,6 +91,20 @@ func TestExtractSendsSchemaAndEmail(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("user message %q doesn't contain %q", text, want)
 		}
+	}
+}
+
+// An output that breaks the inbox schema is still a result: it is returned
+// with what's wrong, not as an error, so it is stored rather than retried.
+func TestExtractReportsValidationErrors(t *testing.T) {
+	api := &fakeAPI{status: 200, body: message("end_turn",
+		`[{"type": "text", "text": "{\"po_number\": \"10442\"}"}]`)}
+	got, err := api.serve(t).Extract(context.Background(), orderSchema, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ValidationErrors) != 1 || !strings.Contains(got.ValidationErrors[0], "missing property 'total'") {
+		t.Errorf("validation errors = %q, want the missing total", got.ValidationErrors)
 	}
 }
 

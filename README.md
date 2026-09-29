@@ -45,9 +45,13 @@ Resend   ──webhook──▶ POST /webhooks/resend     (Svix signature)
   Schema, so `orders` and `invoices` can return different shapes.
 - **Background work.** Workers claim jobs with `FOR UPDATE SKIP LOCKED`, so
   several can run in parallel, and failed jobs are retried with backoff.
-- **LLM extraction.** An LLM reads the email and fills in the inbox schema.
-- **Validated output.** Every extraction is checked against the schema before
-  it is used, and results are kept in `extractions`.
+- **LLM extraction.** An LLM reads the email and fills in the inbox schema. It
+  answers every field, with `null` for what the email doesn't state, rather
+  than leaving fields out.
+- **Validated output.** Every extraction is checked against the full schema,
+  including the constraints the LLM API can't enforce (`pattern`, `minimum`,
+  `format`). Results are kept in `extractions`, marked `valid` or with their
+  `validation_errors`.
 - **Human review.** Anything the system isn't sure about goes to a person,
   who can edit, approve or reject it.
 - **Delivery.** Approved JSON is sent to the customer by a signed webhook and
@@ -131,8 +135,9 @@ name after a `+`:
 - `http://localhost:4040` is ngrok's inspector: it shows each webhook request
   from Postmark and the app's response.
 - `docker compose logs -f app` shows `message accepted`, then `extracted` once
-  the worker is done.
-- `make results` shows the email next to the extracted JSON.
+  the worker is done (a warning instead if the result breaks the inbox schema).
+- `make results` shows the email next to the extracted JSON and whether it
+  passed validation.
 
 ### When it doesn't work
 

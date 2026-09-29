@@ -183,8 +183,13 @@ func extractHandler(st *store.Store, ex *extract.Extractor, log *slog.Logger) wo
 		if err != nil {
 			return err
 		}
-		if err := st.SaveExtraction(ctx, job.MessageID, out.Model, out.JSON); err != nil {
+		if err := st.SaveExtraction(ctx, job.MessageID, out.Model, out.JSON, out.ValidationErrors); err != nil {
 			return fmt.Errorf("save extraction: %w", err)
+		}
+		if len(out.ValidationErrors) > 0 {
+			log.Warn("extracted, but the result breaks the inbox schema", "message_id", job.MessageID,
+				"inbox", in.InboxSlug, "model", out.Model, "validation_errors", out.ValidationErrors)
+			return nil
 		}
 		log.Info("extracted", "message_id", job.MessageID, "inbox", in.InboxSlug, "model", out.Model)
 		return nil

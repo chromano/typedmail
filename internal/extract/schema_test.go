@@ -34,17 +34,24 @@ func TestWireSchema(t *testing.T) {
 	}`
 	want := `{
 		"type": "object",
-		"required": ["n"],
+		"required": ["amount", "items", "many", "method", "n", "ship_to"],
 		"additionalProperties": false,
 		"properties": {
 			"n": {"type": "integer", "description": "Must satisfy: minimum 1."},
 			"amount": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Total. Must satisfy: pattern ^\\d+$."},
 			"method": {"anyOf": [{"type": "string", "enum": ["card", "check"]}, {"type": "null", "enum": null}]},
-			"items": {"type": "array", "minItems": 1, "description": "Must satisfy: maxItems 5.",
-				"items": {"type": "object", "properties": {}, "additionalProperties": false}},
-			"many": {"type": "array", "description": "Must satisfy: minItems 2.", "items": {"type": "string"}},
+			"items": {"description": "Must satisfy: maxItems 5.", "anyOf": [
+				{"type": "array", "minItems": 1,
+					"items": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}},
+				{"type": "null"}
+			]},
+			"many": {"description": "Must satisfy: minItems 2.", "anyOf": [
+				{"type": "array", "items": {"type": "string"}},
+				{"type": "null"}
+			]},
 			"ship_to": {"anyOf": [
-				{"type": "object", "properties": {"city": {"type": "string"}}, "additionalProperties": false},
+				{"type": "object", "properties": {"city": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+					"required": ["city"], "additionalProperties": false},
 				{"type": "null"}
 			]}
 		}
@@ -69,6 +76,69 @@ func roundTrip(t *testing.T, v any) map[string]any {
 		t.Fatal(err)
 	}
 	return mustJSON(t, string(b))
+}
+
+func TestCompleteSchema(t *testing.T) {
+	in := `{
+		"type": "object",
+		"required": ["id"],
+		"properties": {
+			"id": {"type": "string"},
+			"note": {"type": "string"},
+			"tags": {"type": ["array"], "items": {"type": "string"}},
+			"status": {"type": "string", "enum": ["open", "closed"]},
+			"kind": {"const": "order"},
+			"total": {"$ref": "#/$defs/amount_or_null"},
+			"subtotal": {"$ref": "#/$defs/amount"},
+			"either": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+			"lines": {"type": "array", "items": {
+				"type": "object", "required": ["sku"],
+				"properties": {"sku": {"type": "string"}, "qty": {"type": ["integer", "null"]}}
+			}}
+		},
+		"$defs": {
+			"amount": {"type": "string"},
+			"amount_or_null": {"type": ["string", "null"]}
+		}
+	}`
+	want := `{
+		"type": "object",
+		"required": ["either", "id", "kind", "lines", "note", "status", "subtotal", "tags", "total"],
+		"properties": {
+			"id": {"type": "string"},
+			"note": {"type": ["string", "null"]},
+			"tags": {"type": ["array", "null"], "items": {"type": "string"}},
+			"status": {"type": ["string", "null"], "enum": ["open", "closed", null]},
+			"kind": {"anyOf": [{"const": "order"}, {"type": "null"}]},
+			"total": {"$ref": "#/$defs/amount_or_null"},
+			"subtotal": {"anyOf": [{"$ref": "#/$defs/amount"}, {"type": "null"}]},
+			"either": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+			"lines": {"type": ["array", "null"], "items": {
+				"type": "object", "required": ["qty", "sku"],
+				"properties": {"sku": {"type": "string"}, "qty": {"type": ["integer", "null"]}}
+			}}
+		},
+		"$defs": {
+			"amount": {"type": "string"},
+			"amount_or_null": {"type": ["string", "null"]}
+		}
+	}`
+	got, err := completeSchema(json.RawMessage(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip(t, got), mustJSON(t, want)) {
+		g, _ := json.MarshalIndent(got, "", "  ")
+		t.Errorf("complete schema:\n%s", g)
+	}
+}
+
+func TestCompleteSchemaSurvivesRefCycles(t *testing.T) {
+	in := `{"type": "object", "properties": {"a": {"$ref": "#/$defs/loop"}},
+		"$defs": {"loop": {"$ref": "#/$defs/loop"}}}`
+	if _, err := completeSchema(json.RawMessage(in)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestWireSchemaRejectsNonObjectSchemas(t *testing.T) {
@@ -109,6 +179,12 @@ func TestInboxSchemasUseOnlySupportedKeywords(t *testing.T) {
 			}
 			if n["type"] == "object" && n["additionalProperties"] != false {
 				t.Errorf("%s: %s object without additionalProperties: false", f, path)
+			}
+			if props, ok := n["properties"].(map[string]any); ok {
+				required, _ := n["required"].([]any)
+				if len(required) != len(props) {
+					t.Errorf("%s: %s requires %v of its %d properties, want all", f, path, required, len(props))
+				}
 			}
 		})
 	}

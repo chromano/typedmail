@@ -23,9 +23,12 @@ var ErrUnextractable = errors.New("email can't be extracted")
 
 // Result is the extracted JSON and the model that produced it, which can
 // differ from the configured one when a refusal fallback answered.
+// ValidationErrors lists where the JSON breaks the inbox schema; it is empty
+// when the JSON is valid.
 type Result struct {
-	JSON  json.RawMessage
-	Model string
+	JSON             json.RawMessage
+	Model            string
+	ValidationErrors []string
 }
 
 // Email is what the model sees of a message.
@@ -60,6 +63,10 @@ Use only what the email states. When a value isn't in the email, use null where 
 // ErrUnextractable won't go away on retry; any other error might.
 func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email Email) (Result, error) {
 	wire, err := wireSchema(schema)
+	if err != nil {
+		return Result{}, fmt.Errorf("%w: %v", ErrUnextractable, err)
+	}
+	sch, err := validator(schema)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrUnextractable, err)
 	}
@@ -104,7 +111,11 @@ func (e *Extractor) Extract(ctx context.Context, schema json.RawMessage, email E
 	if !json.Valid(out) {
 		return Result{}, fmt.Errorf("model returned invalid JSON (stop reason %q)", resp.StopReason)
 	}
-	return Result{JSON: out, Model: string(resp.Model)}, nil
+	problems, err := validate(sch, out)
+	if err != nil {
+		return Result{}, fmt.Errorf("validate: %w", err)
+	}
+	return Result{JSON: out, Model: string(resp.Model), ValidationErrors: problems}, nil
 }
 
 // isRequestError reports whether a status means the request itself is wrong,

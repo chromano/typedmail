@@ -34,11 +34,11 @@ Each unchecked item is meant to become one GitHub issue.
 - [x] Extract JSON matching the inbox schema from the email body with Claude,
   using structured outputs (#7)
 - [x] Store results in the `extractions` table (#7, absorbs #8)
-- [ ] Make the model answer every field: mark all properties required in the
+- [x] Make the model answer every field: mark all properties required in the
   schema sent to the API, with optional ones nullable. Today it leaves out
   optional fields the email does state (a shipment's items and delivery
   date), and once corrupted a value (`tracking_url`) (#9)
-- [ ] Validate every extraction against the full inbox schema, which enforces
+- [x] Validate every extraction against the full inbox schema, which enforces
   the constraints the API can't (`pattern`, `minimum`, `format`), and record
   failures (#9)
 
