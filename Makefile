@@ -5,6 +5,10 @@ INBOUND_PASSWORD  ?= dev-secret
 
 export DATABASE_URL TEST_DATABASE_URL INBOUND_USER INBOUND_PASSWORD
 
+# seed, requeue and results run psql against the local Docker database, or
+# against REMOTE_DATABASE_URL when it is set (e.g. Railway's public URL).
+PSQL = $(if $(REMOTE_DATABASE_URL),docker run --rm -i postgres:18 psql "$(REMOTE_DATABASE_URL)",docker compose exec -T db psql -U typedmail)
+
 .PHONY: db up down run test seed send requeue results
 
 db:    ## start Postgres only
@@ -28,7 +32,7 @@ seed:  ## create or update one inbox per schemas/<slug>.json
 		echo "seeding $$slug"; \
 		echo "INSERT INTO inboxes (slug, schema) VALUES (:'slug', :'schema'::jsonb) \
 			ON CONFLICT (slug) DO UPDATE SET schema = EXCLUDED.schema" | \
-		docker compose exec -T db psql -U typedmail -q -v ON_ERROR_STOP=1 \
+		$(PSQL) -q -v ON_ERROR_STOP=1 \
 			-v slug="$$slug" -v schema="$$(cat $$f)" || exit 1; \
 	done
 
@@ -43,10 +47,10 @@ send:  ## post a sample email to the webhook (SAMPLE=testdata/postmark_invoice.j
 requeue:  ## requeue failed jobs with a fresh set of attempts (JOB=<id> for one)
 	@echo "UPDATE jobs SET status = 'queued', attempts = 0, run_at = now(), updated_at = now() \
 		WHERE status = 'failed' AND id = coalesce(nullif(:'job', '')::bigint, id) RETURNING 'requeued job ' || id" | \
-	docker compose exec -T db psql -U typedmail -q -At -v ON_ERROR_STOP=1 -v job="$(JOB)"
+	$(PSQL) -q -At -v ON_ERROR_STOP=1 -v job="$(JOB)"
 
 results:  ## show the latest extractions next to their emails
-	@docker compose exec -T db psql -U typedmail -P expanded=on -c \
+	@$(PSQL) -P expanded=on -c \
 		"SELECT m.id, i.slug AS inbox, m.from_address, m.subject, j.status, e.model, e.valid, e.validation_errors, jsonb_pretty(e.data) AS extracted \
 		FROM messages m JOIN inboxes i ON i.id = m.inbox_id JOIN LATERAL (SELECT status FROM jobs WHERE message_id = m.id ORDER BY id DESC LIMIT 1) j ON true \
 		LEFT JOIN extractions e ON e.message_id = m.id ORDER BY m.id DESC LIMIT 5"

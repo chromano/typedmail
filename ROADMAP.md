@@ -45,6 +45,7 @@ Each unchecked item is meant to become one GitHub issue.
 ## Docs
 
 - [x] Running with Postmark and ngrok, in the README
+- [x] Deploying to Railway with its Postgres, in the README
 
 ## Later
 
@@ -61,5 +62,4 @@ Not needed to prove "email in, JSON out". Revisit once there is a first user.
 - Keep the history of extraction results
 - `make test-docker`: run the test suite in a Go container so the host
   doesn't need Go
-- Deploy to Cloud Run with managed Postgres
 - Retention policy for raw payloads

@@ -202,3 +202,79 @@ job, then `extracted`; `make results` shows the result.
 | `{"status":"dropped"}` | No inbox with that name (the part before the `@`, or after the `+`); check `make seed` ran. |
 | Job `fetch` stays `queued` | `RESEND_API_KEY` isn't set; the log says so at startup. |
 | Job `fetch` `failed` | Resend doesn't know the email (404), or keeps rejecting the key; `docker compose logs app \| grep 'job failed'` shows which. |
+
+## Deploying to Railway
+
+[Railway](https://railway.com) runs the `Dockerfile` as an always-on service,
+so the worker keeps polling between requests, next to a Railway Postgres.
+The Hobby plan is $5 a month with $5 of usage included, billed on what the
+app actually uses; an idle Go binary and a small Postgres fit in that.
+
+You need a Railway account and the CLI (`brew install railway`, then
+`railway login`).
+
+**1. Create the project and its database**, from the repo root:
+
+```sh
+railway init                         # new project
+railway add --database postgres      # a Postgres service named Postgres
+railway add --service typedmail      # an empty service for the app
+railway service link typedmail       # make it the CLI's target
+```
+
+Link the app service before anything else: `railway add --database` links
+the CLI to Postgres, and a `railway up` then would replace the database's
+image with the app's.
+
+**2. Set the app's variables.** In the app service's **Variables** tab, or
+with `railway variable set 'KEY=value'` (single quotes, so the shell leaves
+`${{…}}` alone):
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}`, a reference to the database over Railway's private network |
+| `INBOUND_USER` | `postmark` |
+| `INBOUND_PASSWORD` | a fresh secret: `openssl rand -hex 16` |
+| `ANTHROPIC_API_KEY` | your key; without it messages are stored but not extracted |
+| `RESEND_WEBHOOK_SECRET`, `RESEND_API_KEY` | only if you use Resend |
+
+Railway sets `PORT` itself, and the app listens on it. Then deploy:
+
+```sh
+railway up    # build the Dockerfile and deploy it to typedmail
+```
+
+The app migrates the database on startup.
+
+**3. Give it a public URL** with `railway domain`, and check it:
+`curl https://<app>.up.railway.app/healthz` should print `ok`. Setting the
+healthcheck path to `/healthz` in the service's settings makes Railway wait for
+a new deploy to answer before it stops the old one.
+
+**4. Seed the inboxes.** The database is only reachable inside the project, so
+enable public networking on the Postgres service (**Settings → Networking**,
+which adds `DATABASE_PUBLIC_URL`), copy that URL from its **Variables** tab,
+and run:
+
+```sh
+export REMOTE_DATABASE_URL='postgresql://…@….proxy.rlwy.net:…/railway'
+make seed
+```
+
+With `REMOTE_DATABASE_URL` set, `make seed`, `make results` and
+`make requeue` run against Railway instead of the local database, through the
+`postgres:18` image's `psql`, so only Docker is needed. Traffic through the
+public URL is billed as egress; turn public networking off again when you're
+done if you like.
+
+**5. Point the webhooks at Railway**, as in the sections above but with the
+Railway host instead of ngrok's:
+
+```
+https://postmark:<INBOUND_PASSWORD>@<app>.up.railway.app/webhooks/postmark
+https://<app>.up.railway.app/webhooks/resend
+```
+
+`railway logs` shows `message accepted`, then `extracted`, and `make results`
+shows the result. Later deploys are `railway up`, or connect the GitHub repo
+in the service's settings to deploy on every push to `main`.
